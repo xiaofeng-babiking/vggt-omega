@@ -41,6 +41,8 @@ class CameraHead(nn.Module):
             nn.GELU(),
             nn.Linear(dim_in // 2, 9, bias=True),
         )
+        # Set by vggt_omega.distributed.install_sequence_parallel; None -> single-GPU.
+        self.seq_parallel_ctx = None
 
     def forward(
         self,
@@ -60,16 +62,20 @@ class CameraHead(nn.Module):
         if tokens.dtype != torch.float32:
             tokens = tokens.float()
 
-        camera_and_register_tokens = tokens[:, :, :patch_token_start]
-        camera_and_register_tokens = self.token_norm(camera_and_register_tokens)
+        car = self.token_norm(tokens[:, :, :patch_token_start])  # (B, S_local, 17, dim_in)
 
-        camera_and_register_tokens = camera_and_register_tokens.reshape(batch_size, num_frames * patch_token_start, -1)
-        rope_sincos = None
+        ctx = self.seq_parallel_ctx
+        if ctx is not None:
+            car = ctx.all_gather_frames(car, frame_dim=1)  # (B, S_full, 17, dim_in)
+        s_attn = car.shape[1]
+        car = car.reshape(batch_size, s_attn * patch_token_start, -1)
         for block in self.trunk:
-            camera_and_register_tokens = block(camera_and_register_tokens, rope_sincos)
+            car = block(car, None)
+        car = car.reshape(batch_size, s_attn, patch_token_start, -1)
+        if ctx is not None:
+            car = ctx.slice_local_frames(car, frame_dim=1)  # (B, S_local, 17, dim_in)
 
-        camera_and_register_tokens = camera_and_register_tokens.reshape(batch_size, num_frames, patch_token_start, -1)
-        camera_tokens = self.trunk_norm(camera_and_register_tokens[:, :, 0])
+        camera_tokens = self.trunk_norm(car[:, :, 0])
         return _apply_camera_activation(self.camera_branch(camera_tokens))
 
 
