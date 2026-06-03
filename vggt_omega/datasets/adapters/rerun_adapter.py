@@ -285,7 +285,8 @@ def _log_text(ctx: Ctx, i: int) -> None:
 class View:
     name: str
     requires: set
-    optional: set
+    optional: set  # informational: modalities the logger uses if present; read
+                   # directly inside the logger, not consulted by select_views.
     log: Callable[[Ctx, int], None]
 
 
@@ -320,11 +321,14 @@ def _ensure_init(rr, name: str, spawn: bool) -> None:
 
 
 def _set_time(rr, norm: NormalizedSample, i: int) -> None:
+    # Both branches are load-bearing across the supported range (rerun-sdk>=0.20):
+    # older SDKs expose set_time_seconds/set_time_sequence, while recent ones
+    # (e.g. 0.33) dropped them for the unified set_time. Keep both.
     if "timestamps" in norm.data:
         t = float(norm.data["timestamps"][i])
         if hasattr(rr, "set_time_seconds"):
             rr.set_time_seconds("time", t)
-        else:  # recent Rerun dropped set_time_seconds for the unified set_time
+        else:
             rr.set_time("time", timestamp=t)
     else:
         if hasattr(rr, "set_time_sequence"):

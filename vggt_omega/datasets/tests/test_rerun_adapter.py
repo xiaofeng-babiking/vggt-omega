@@ -245,6 +245,15 @@ def test_log_batch_exercises_remaining_loggers(caplog):
     assert not failures, failures
 
 
+def test_log_batch_accumulate_path_runs_clean(caplog):
+    # Drive the accumulate=True branch (world/points/{i}) and point_stride>1
+    # through log_batch; assert the world view logged without warning.
+    pytest.importorskip("rerun").init("vggt_test_accum", spawn=False)
+    with caplog.at_level(logging.WARNING):
+        rerun_adapter.log_batch(_make_raw_sample(), spawn=False, accumulate=True, point_stride=2)
+    assert not [r for r in caplog.records if "failed" in r.getMessage()]
+
+
 # Same data location + guard as test_tum_dataset.py
 TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
 HAVE_TUM = os.path.isdir(TUM_DIR)
