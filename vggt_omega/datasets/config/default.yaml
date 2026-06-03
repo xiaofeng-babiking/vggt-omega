@@ -1,0 +1,18 @@
+defaults:
+  - default_dataset.yaml
+
+data:
+  train:
+    dataset:
+      _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: vggt_omega.datasets.vendors.tum.TumDataset
+          split: train
+          TUM_DIR: /jfs/guibiao/streamVGGT/data/eval/tum
+          sequences: ["*"]
+          len_train: 100000
+          expand_ratio: 8
+          assoc_max_diff: 0.02
+          depth_scale: 5000.0
+          intrinsics: null
+          min_num_images: 24

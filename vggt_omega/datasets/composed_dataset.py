@@ -16,6 +16,7 @@ import bisect
 from .dataset_util import *
 from .track_util import *
 from .augmentation import get_image_augmentation
+from .modality import carry_extra_modalities
 
 
 class ComposedDataset(Dataset, ABC):
@@ -181,6 +182,7 @@ class ComposedDataset(Dataset, ABC):
             sample["track_vis_mask"] = track_vis_mask
             sample["track_positive_mask"] = track_positive_mask
 
+        sample = carry_extra_modalities(batch, sample)
         return sample
 
 

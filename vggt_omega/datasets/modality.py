@@ -103,5 +103,7 @@ def carry_extra_modalities(batch: dict, sample: dict) -> dict:
             arr = np.stack(val) if isinstance(val, list) else np.asarray(val)
             sample[key] = torch.from_numpy(arr.astype(spec.dtype))
     if "modalities" in batch:
-        sample["modalities"] = batch["modalities"]
+        # Store as a sorted list of Modality values so PyTorch's default collate
+        # can stack/batch the field (frozenset is not collatable).
+        sample["modalities"] = sorted(m.value for m in batch["modalities"])
     return sample
