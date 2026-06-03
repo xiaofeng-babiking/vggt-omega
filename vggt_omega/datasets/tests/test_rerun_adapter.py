@@ -210,6 +210,41 @@ def test_log_batch_empty_sample_is_noop(caplog):
     rerun_adapter.log_batch({"modalities": frozenset()}, spawn=False)  # V == 0
 
 
+def _make_extra_modality_sample(V=2, H=6, W=6, N=4):
+    """A sample covering the modalities the other tests don't: depth_confs,
+    normals, semantics, tracks, camera_ids (plus camera + rgb so those views
+    activate). Used to smoke-run the remaining loggers end-to-end."""
+    rng = np.random.default_rng(1)
+    return {
+        "images": [rng.integers(0, 256, (H, W, 3), dtype=np.uint8) for _ in range(V)],
+        "intrinsics": [np.array([[W, 0, W / 2], [0, W, H / 2], [0, 0, 1]], np.float32)
+                       for _ in range(V)],
+        "extrinsics": [np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1.0]], np.float32)
+                       for _ in range(V)],
+        "depth_confs": [rng.random((H, W)).astype(np.float32) for _ in range(V)],
+        "normals": [(rng.random((H, W, 3)).astype(np.float32) * 2 - 1) for _ in range(V)],
+        "semantics": [rng.integers(0, 5, (H, W), dtype=np.int32) for _ in range(V)],
+        "tracks": [(rng.random((N, 2)).astype(np.float32) * W) for _ in range(V)],
+        "camera_ids": np.zeros(V, dtype=np.int32),
+        "modalities": frozenset({
+            Modality.IMAGE, Modality.INTRINSICS, Modality.EXTRINSICS,
+            Modality.DEPTH_CONF, Modality.NORMAL, Modality.SEMANTIC,
+            Modality.TRACK, Modality.CAMERA_ID,
+        }),
+    }
+
+
+def test_log_batch_exercises_remaining_loggers(caplog):
+    # depth_conf / normals / semantics / tracks (and the camera_ids path) are not
+    # covered by the synthetic or TUM samples; run them and assert no view warned,
+    # i.e. each logger actually succeeded rather than being swallowed by _guarded.
+    pytest.importorskip("rerun").init("vggt_test_kitchen", spawn=False)
+    with caplog.at_level(logging.WARNING):
+        rerun_adapter.log_batch(_make_extra_modality_sample(), spawn=False)
+    failures = [r.getMessage() for r in caplog.records if "failed" in r.getMessage()]
+    assert not failures, failures
+
+
 # Same data location + guard as test_tum_dataset.py
 TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
 HAVE_TUM = os.path.isdir(TUM_DIR)
