@@ -137,6 +137,77 @@ def _extrinsic_to_cam_to_world(ext) -> tuple[np.ndarray, np.ndarray]:
     return R_cw.astype(np.float32), t_cw.astype(np.float32)
 
 
+@dataclass(frozen=True)
+class Ctx:
+    """Per-`log_batch` context handed to every view logger."""
+    rr: object
+    norm: NormalizedSample
+    point_stride: int
+    accumulate: bool
+
+
+def _camera_path(norm: NormalizedSample, i: int) -> str:
+    if "camera_ids" in norm.data:
+        return f"world/camera/{int(norm.data['camera_ids'][i])}"
+    return "world/camera"
+
+
+def _frame_hw(norm: NormalizedSample):
+    """(H, W) of the per-frame rasters, or None if no spatial modality present."""
+    for key in ("images", "world_points", "cam_points", "depths", "point_masks", "normals"):
+        if key in norm.data:
+            shape = norm.data[key].shape
+            return int(shape[1]), int(shape[2])
+    return None
+
+
+def _log_camera(ctx: Ctx, i: int) -> None:
+    rr, d = ctx.rr, ctx.norm.data
+    R_cw, t_cw = _extrinsic_to_cam_to_world(d["extrinsics"][i])
+    cam = _camera_path(ctx.norm, i)
+    rr.log(cam, rr.Transform3D(translation=t_cw, mat3x3=R_cw))
+    K = np.asarray(d["intrinsics"][i], dtype=np.float32)
+    hw = _frame_hw(ctx.norm)
+    if hw is None:  # no raster -> derive resolution from the principal point
+        w, h = int(round(K[0, 2] * 2)), int(round(K[1, 2] * 2))
+    else:
+        h, w = hw
+    rr.log(cam + "/image", rr.Pinhole(image_from_camera=K, resolution=[w, h]))
+
+
+def _log_trajectory(ctx: Ctx) -> None:
+    """Log the full camera-center polyline once, as a static overview."""
+    ext = ctx.norm.data["extrinsics"]
+    centers = np.stack(
+        [_extrinsic_to_cam_to_world(ext[j])[1] for j in range(ctx.norm.V)]
+    ).astype(np.float32)
+    ctx.rr.log(
+        "world/trajectory",
+        ctx.rr.LineStrips3D([centers], colors=[[255, 128, 0]]),
+        static=True,
+    )
+
+
+def _log_world_points(ctx: Ctx, i: int) -> None:
+    rr, d = ctx.rr, ctx.norm.data
+    pts = d["world_points"][i].reshape(-1, 3)
+    cols = d["images"][i].reshape(-1, 3) if "images" in d else None
+    if "point_masks" in d:
+        mask = d["point_masks"][i].reshape(-1).astype(bool)
+    else:
+        mask = np.ones(pts.shape[0], dtype=bool)
+    mask &= np.isfinite(pts).all(axis=1)
+    pts = pts[mask]
+    cols = cols[mask] if cols is not None else None
+    stride = max(int(ctx.point_stride), 1)
+    pts = pts[::stride]
+    cols = cols[::stride] if cols is not None else None
+    if pts.shape[0] == 0:
+        raise ValueError("no valid world points after masking")
+    path = f"world/points/{i}" if ctx.accumulate else "world/points"
+    rr.log(path, rr.Points3D(pts, colors=cols))
+
+
 def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task
     """Placeholder; implemented in a later task."""
     raise NotImplementedError("log_batch is implemented in a later task")

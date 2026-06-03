@@ -134,3 +134,16 @@ def test_extrinsic_camera_center_for_identity_rotation():
     ext = np.concatenate([R, t[:, None]], axis=1)
     _, t_cw = rerun_adapter._extrinsic_to_cam_to_world(ext)
     np.testing.assert_allclose(t_cw, [0.0, 0.0, -5.0], atol=1e-6)
+
+
+def test_camera_path_uses_camera_id_when_present():
+    norm = rerun_adapter.normalize_sample(_make_raw_sample())
+    assert rerun_adapter._camera_path(norm, 0) == "world/camera"
+    norm.data["camera_ids"] = np.array([7, 7])
+    norm.present.add("camera_ids")
+    assert rerun_adapter._camera_path(norm, 0) == "world/camera/7"
+
+
+def test_frame_hw_reads_spatial_shape():
+    norm = rerun_adapter.normalize_sample(_make_raw_sample(V=2, H=8, W=8))
+    assert rerun_adapter._frame_hw(norm) == (8, 8)
