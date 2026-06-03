@@ -79,6 +79,9 @@ class SelfAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias, device=device)
         self.proj_drop = nn.Dropout(proj_drop)
+        # Set by vggt_omega.distributed.install_sequence_parallel on the global
+        # inter-frame blocks; None elsewhere (-> ordinary single-GPU attention).
+        self.seq_parallel_ctx = None
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
@@ -133,7 +136,14 @@ class SelfAttention(nn.Module):
             k = self.k_norm(k)
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
-        x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        ctx = self.seq_parallel_ctx
+        if ctx is not None:
+            # Ulysses: gather all tokens, keep only this rank's H/G heads.
+            q, k, v = ctx.scatter_heads(q), ctx.scatter_heads(k), ctx.scatter_heads(v)
+            x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+            x = ctx.gather_heads(x)
+        else:
+            x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
 
