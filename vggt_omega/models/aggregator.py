@@ -243,8 +243,20 @@ def _build_patch_embed(patch_size: int, embed_dim: int) -> DinoVisionTransformer
     return model
 
 
-def slice_expand_and_flatten(token_tensor: torch.Tensor, batch_size: int, num_frames: int) -> torch.Tensor:
+def slice_expand_and_flatten(
+    token_tensor: torch.Tensor, batch_size: int, num_frames: int, is_first_shard: bool = True
+) -> torch.Tensor:
+    """Expand the size-2 ``[first_frame, other_frames]`` token bank to ``num_frames``.
+
+    ``is_first_shard=False`` (a non-leading sequence-parallel shard) means none of
+    these local frames is the global first frame, so every one uses the
+    ``other_frames`` token. Default ``True`` reproduces the single-GPU behavior.
+    """
+    other = token_tensor[:, 1:]  # (1, 1, *tail)
+    if not is_first_shard:
+        tokens = other.expand(batch_size, num_frames, *token_tensor.shape[2:])
+        return tokens.view(batch_size * num_frames, *tokens.shape[2:])
     first_frame_token = token_tensor[:, 0:1].expand(batch_size, 1, *token_tensor.shape[2:])
-    other_frame_tokens = token_tensor[:, 1:].expand(batch_size, num_frames - 1, *token_tensor.shape[2:])
+    other_frame_tokens = other.expand(batch_size, num_frames - 1, *token_tensor.shape[2:])
     tokens = torch.cat([first_frame_token, other_frame_tokens], dim=1)
     return tokens.view(batch_size * num_frames, *tokens.shape[2:])
