@@ -163,3 +163,20 @@ def test_track_colors_shape_and_dtype():
     colors = rerun_adapter._track_colors(5)
     assert colors.shape == (5, 3)
     assert colors.dtype == np.uint8
+
+
+def test_select_views_full_coverage():
+    norm = rerun_adapter.normalize_sample(_make_raw_sample())
+    names = {v.name for v in rerun_adapter.select_views(norm.present)}
+    assert {"camera", "rgb", "world", "depth", "text"} <= names
+
+
+def test_select_views_skips_views_with_missing_requirements():
+    present = {"images"}  # images only -> no camera, no depth, no world cloud
+    names = {v.name for v in rerun_adapter.select_views(present)}
+    assert names == {"rgb"}
+
+
+def test_select_views_camera_needs_both_intrinsics_and_extrinsics():
+    assert {v.name for v in rerun_adapter.select_views({"intrinsics"})} == set()
+    assert {v.name for v in rerun_adapter.select_views({"intrinsics", "extrinsics"})} == {"camera"}

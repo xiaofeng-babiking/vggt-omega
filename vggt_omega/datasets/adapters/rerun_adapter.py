@@ -16,6 +16,7 @@ from __future__ import annotations
 import colorsys
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
@@ -278,6 +279,35 @@ def _log_tracks(ctx: Ctx, i: int) -> None:
 def _log_text(ctx: Ctx, i: int) -> None:
     txt = ctx.norm.data["texts"][i]
     ctx.rr.log(_camera_path(ctx.norm, i) + "/text", ctx.rr.TextDocument(str(txt)))
+
+
+@dataclass(frozen=True)
+class View:
+    name: str
+    requires: set
+    optional: set
+    log: Callable[[Ctx, int], None]
+
+
+VIEWS = [
+    View("camera",    {"intrinsics", "extrinsics"}, {"camera_ids"},           _log_camera),
+    View("rgb",       {"images"},        set(),                               _log_rgb),
+    View("world",     {"world_points"},  {"images", "point_masks"},           _log_world_points),
+    View("depth",     {"depths"},        set(),                               _log_depth),
+    View("depthconf", {"depth_confs"},   set(),                               _log_depth_conf),
+    View("normals",   {"normals"},       set(),                               _log_normals),
+    View("semantics", {"semantics"},     set(),                               _log_semantics),
+    View("skymask",   {"sky_masks"},     set(),                  _log_seg("sky_mask", "sky_masks")),
+    View("pointmask", {"point_masks"},   set(),              _log_seg("point_mask", "point_masks")),
+    View("tracks",    {"tracks"},        {"images"},                          _log_tracks),
+    View("text",      {"texts"},         set(),                               _log_text),
+]
+
+
+def select_views(present) -> list:
+    """Views whose required modalities are all present, in registry order."""
+    present = set(present)
+    return [v for v in VIEWS if v.requires <= present]
 
 
 def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task
