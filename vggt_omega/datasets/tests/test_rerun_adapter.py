@@ -1,8 +1,10 @@
 import logging
+import os
 import sys
 
 import numpy as np
 import pytest
+from omegaconf import OmegaConf
 
 from vggt_omega.datasets.adapters import rerun_adapter
 from vggt_omega.datasets.modality import Modality
@@ -206,3 +208,43 @@ def test_log_batch_is_robust_to_bad_fields(caplog):
 def test_log_batch_empty_sample_is_noop(caplog):
     pytest.importorskip("rerun")
     rerun_adapter.log_batch({"modalities": frozenset()}, spawn=False)  # V == 0
+
+
+# Same data location + guard as test_tum_dataset.py
+TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
+HAVE_TUM = os.path.isdir(TUM_DIR)
+
+
+def _tum_common_conf():
+    return OmegaConf.create(
+        {
+            "img_size": 512,
+            "patch_size": 16,
+            "training": True,
+            "inside_random": False,
+            "allow_duplicate_img": True,
+            "get_nearby": True,
+            "rescale": True,
+            "rescale_aug": True,
+            "landscape_check": False,
+            "augs": {"scales": [0.8, 1.2]},
+        }
+    )
+
+
+@pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
+def test_log_batch_on_real_tum_sample():
+    rr = pytest.importorskip("rerun")
+    pytest.importorskip("torch")
+    from vggt_omega.datasets.vendors.tum import TumDataset
+
+    ds = TumDataset(
+        common_conf=_tum_common_conf(),
+        split="train",
+        TUM_DIR=TUM_DIR,
+        sequences=["rgbd_dataset_freiburg3_sitting_halfsphere"],
+        len_train=10,
+    )
+    sample = ds.get_data(seq_index=0, img_per_seq=2, aspect_ratio=1.0)  # raw numpy dict
+    rr.init("vggt_test_tum", spawn=False)
+    rerun_adapter.log_batch(sample, spawn=False)  # must complete without raising
