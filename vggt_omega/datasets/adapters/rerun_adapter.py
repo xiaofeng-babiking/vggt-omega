@@ -310,6 +310,67 @@ def select_views(present) -> list:
     return [v for v in VIEWS if v.requires <= present]
 
 
-def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task
-    """Placeholder; implemented in a later task."""
-    raise NotImplementedError("log_batch is implemented in a later task")
+_INITIALIZED = set()
+
+
+def _ensure_init(rr, name: str, spawn: bool) -> None:
+    if name not in _INITIALIZED:
+        rr.init(name, spawn=spawn)
+        _INITIALIZED.add(name)
+
+
+def _set_time(rr, norm: NormalizedSample, i: int) -> None:
+    if "timestamps" in norm.data:
+        t = float(norm.data["timestamps"][i])
+        if hasattr(rr, "set_time_seconds"):
+            rr.set_time_seconds("time", t)
+        else:  # recent Rerun dropped set_time_seconds for the unified set_time
+            rr.set_time("time", timestamp=t)
+    else:
+        if hasattr(rr, "set_time_sequence"):
+            rr.set_time_sequence("frame", i)
+        else:
+            rr.set_time("frame", sequence=i)
+
+
+def _guarded(fn, *args) -> None:
+    """Run a view logger; on failure warn and continue (never crash a viz)."""
+    try:
+        fn(*args)
+    except Exception as exc:  # noqa: BLE001 - quick-viz must survive one bad field
+        logger.warning("rerun view %s failed: %s", getattr(fn, "__name__", fn), exc)
+
+
+def log_batch(
+    sample: dict,
+    *,
+    name: str = "vggt_dataset",
+    spawn: bool = True,
+    point_stride: int = 4,
+    accumulate: bool = False,
+) -> None:
+    """Log one dataset sample (V frames) to Rerun.
+
+    Args:
+        sample: a raw `get_data()` numpy dict OR a `ComposedDataset` torch dict.
+        name: Rerun application id / recording name.
+        spawn: open the live Rerun viewer on first call.
+        point_stride: subsample factor for the world point cloud (speed).
+        accumulate: if True, keep every frame's cloud (world/points/{i}); else
+            replace at world/points each frame for clean timeline scrubbing.
+    """
+    rr = _require_rerun()
+    norm = normalize_sample(sample)
+    if norm.V == 0:
+        logger.warning("log_batch: empty sample (V=0); nothing to log")
+        return
+    _ensure_init(rr, name, spawn)
+    rr.log("world", rr.ViewCoordinates.RDF, static=True)
+    ctx = Ctx(rr=rr, norm=norm, point_stride=point_stride, accumulate=accumulate)
+    if "extrinsics" in norm.present:
+        _guarded(_log_trajectory, ctx)
+    active = select_views(norm.present)
+    for i in range(norm.V):
+        _set_time(rr, norm, i)
+        for view in active:
+            _guarded(view.log, ctx, i)

@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import numpy as np
@@ -180,3 +181,28 @@ def test_select_views_skips_views_with_missing_requirements():
 def test_select_views_camera_needs_both_intrinsics_and_extrinsics():
     assert {v.name for v in rerun_adapter.select_views({"intrinsics"})} == set()
     assert {v.name for v in rerun_adapter.select_views({"intrinsics", "extrinsics"})} == {"camera"}
+
+
+def test_log_batch_smoke_on_full_sample():
+    rr = pytest.importorskip("rerun")
+    rr.init("vggt_test_smoke", spawn=False)  # no viewer; logs to the global sink
+    # Must complete without raising across every active view, both input forms.
+    rerun_adapter.log_batch(_make_raw_sample(), spawn=False)
+    rerun_adapter.log_batch(_make_composed_sample(), spawn=False)
+
+
+def test_log_batch_is_robust_to_bad_fields(caplog):
+    pytest.importorskip("rerun")
+    sample = _make_raw_sample()
+    sample["extrinsics"][0][:] = np.nan          # poison a pose
+    sample["point_masks"] = [np.zeros((8, 8), bool) for _ in range(2)]  # empty cloud
+    # Per-view isolation: the empty-cloud world view raises, _guarded catches it,
+    # warns, and the run continues without raising.
+    with caplog.at_level(logging.WARNING):
+        rerun_adapter.log_batch(sample, spawn=False)
+    assert any("failed" in r.getMessage() for r in caplog.records)
+
+
+def test_log_batch_empty_sample_is_noop(caplog):
+    pytest.importorskip("rerun")
+    rerun_adapter.log_batch({"modalities": frozenset()}, spawn=False)  # V == 0
