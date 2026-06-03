@@ -20,3 +20,5 @@ skyseg.onnx.tmp
 uv.lock
 
 .vscode
+
+.mcp.json
