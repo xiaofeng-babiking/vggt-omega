@@ -14,8 +14,11 @@ requires it at call time.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import numpy as np
+
+from vggt_omega.datasets.modality import REGISTRY
 
 try:  # torch is only needed to read ComposedDataset tensors; raw numpy dicts don't need it.
     import torch
@@ -57,6 +60,67 @@ def _canonical_images(arr) -> np.ndarray:
             arr = arr * 255.0
         arr = np.clip(arr, 0, 255)
     return np.ascontiguousarray(arr.astype(np.uint8))
+
+
+_MODALITY_KEYS = frozenset(spec.key for spec in REGISTRY.values())
+
+
+@dataclass(frozen=True)
+class NormalizedSample:
+    """Canonical view of a sample: modality-key -> numpy array (or list for texts)."""
+    data: dict
+    present: set
+    V: int
+
+
+def _to_numpy(val):
+    """Stack a list / detach a tensor / asarray, returning a numpy array.
+
+    `texts` (list[str]) is returned unchanged as a Python list.
+    """
+    if isinstance(val, list):
+        if len(val) and isinstance(val[0], str):
+            return list(val)
+        if len(val) and torch is not None and torch.is_tensor(val[0]):
+            val = [v.detach().cpu().numpy() for v in val]
+        return np.stack(val)
+    if torch is not None and torch.is_tensor(val):
+        return val.detach().cpu().numpy()
+    if isinstance(val, str):
+        return val
+    return np.asarray(val)
+
+
+def _resolve_present(sample: dict) -> set:
+    """The set of modality keys that are both declared/known and non-None."""
+    declared = sample.get("modalities")
+    if declared is not None:
+        keys = {m.value if hasattr(m, "value") else str(m) for m in declared}
+    else:
+        keys = set(_MODALITY_KEYS)
+    return {k for k in keys if k in _MODALITY_KEYS and sample.get(k) is not None}
+
+
+def normalize_sample(sample: dict) -> NormalizedSample:
+    """Normalize a raw-numpy or ComposedDataset-torch sample to canonical form."""
+    present = _resolve_present(sample)
+    data: dict = {}
+    for key in present:
+        data[key] = _to_numpy(sample[key])
+    if "images" in data:
+        data["images"] = _canonical_images(data["images"])
+    # Frame count V: leading dim of any per-frame array, else length of texts.
+    # Every REGISTRY modality is per_frame=True, so shape[0] == V for any stacked
+    # array regardless of which present key we hit first.
+    V = 0
+    for key, val in data.items():
+        if isinstance(val, np.ndarray) and val.ndim >= 1:
+            V = int(val.shape[0])
+            break
+        if isinstance(val, list):
+            V = len(val)
+            break
+    return NormalizedSample(data=data, present=present, V=V)
 
 
 def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task
