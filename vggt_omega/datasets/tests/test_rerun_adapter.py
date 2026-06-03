@@ -112,3 +112,25 @@ def test_normalize_sample_falls_back_to_present_keys_without_modalities_field():
     del raw["modalities"]
     norm = rerun_adapter.normalize_sample(raw)
     assert "images" in norm.present and "depths" in norm.present
+
+
+def test_extrinsic_inversion_round_trip():
+    # A non-trivial rotation (90 deg about Z) + translation.
+    R = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    t = np.array([1.0, 2.0, 3.0])
+    ext = np.concatenate([R, t[:, None]], axis=1)  # (3,4) world->cam
+    R_cw, t_cw = rerun_adapter._extrinsic_to_cam_to_world(ext)
+    # Apply cam->world then world->cam; must recover the original camera point.
+    x_cam = np.array([0.5, -0.7, 2.0])
+    x_world = R_cw @ x_cam + t_cw
+    x_cam2 = R @ x_world + t
+    np.testing.assert_allclose(x_cam2, x_cam, atol=1e-5)
+
+
+def test_extrinsic_camera_center_for_identity_rotation():
+    # world->cam X_cam = X_world + t with t=[0,0,5] => camera center at world z=-5
+    R = np.eye(3)
+    t = np.array([0.0, 0.0, 5.0])
+    ext = np.concatenate([R, t[:, None]], axis=1)
+    _, t_cw = rerun_adapter._extrinsic_to_cam_to_world(ext)
+    np.testing.assert_allclose(t_cw, [0.0, 0.0, -5.0], atol=1e-6)

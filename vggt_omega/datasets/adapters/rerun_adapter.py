@@ -123,6 +123,20 @@ def normalize_sample(sample: dict) -> NormalizedSample:
     return NormalizedSample(data=data, present=present, V=V)
 
 
+def _extrinsic_to_cam_to_world(ext) -> tuple[np.ndarray, np.ndarray]:
+    """Invert a world->cam (3,4) OpenCV extrinsic into cam->world (R, t).
+
+    Returns (R_cw, t_cw) such that X_world = R_cw @ X_cam + t_cw, i.e. the
+    camera's pose in world space (what Rerun's Transform3D wants).
+    """
+    ext = np.asarray(ext, dtype=np.float64)
+    R = ext[:3, :3]
+    t = ext[:3, 3]
+    R_cw = R.T
+    t_cw = -R.T @ t
+    return R_cw.astype(np.float32), t_cw.astype(np.float32)
+
+
 def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task
     """Placeholder; implemented in a later task."""
     raise NotImplementedError("log_batch is implemented in a later task")
