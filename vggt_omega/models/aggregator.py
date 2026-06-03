@@ -81,6 +81,8 @@ class Aggregator(nn.Module):
         self.camera_token = nn.Parameter(torch.empty(1, 2, 1, embed_dim))
         self.register_token = nn.Parameter(torch.empty(1, 2, num_register_tokens, embed_dim))
         self.patch_token_start = 1 + num_register_tokens
+        # Set by vggt_omega.distributed.install_sequence_parallel; None -> single-GPU.
+        self.seq_parallel_ctx = None
 
         self.inter_frame_attention_types = ["global"] * depth
         for idx in register_attention_block_indices:
@@ -108,8 +110,9 @@ class Aggregator(nn.Module):
         images = (images - self._resnet_mean) / self._resnet_std
         images = images.view(batch_size * num_frames, num_channels, height, width)
 
-        camera_token = slice_expand_and_flatten(self.camera_token, batch_size, num_frames)
-        register_token = slice_expand_and_flatten(self.register_token, batch_size, num_frames)
+        is_first_shard = self.seq_parallel_ctx is None or self.seq_parallel_ctx.is_first_shard
+        camera_token = slice_expand_and_flatten(self.camera_token, batch_size, num_frames, is_first_shard)
+        register_token = slice_expand_and_flatten(self.register_token, batch_size, num_frames, is_first_shard)
 
         patch_tokens = self.patch_embed(images)
         if isinstance(patch_tokens, dict):
@@ -188,33 +191,20 @@ class Aggregator(nn.Module):
             raise ValueError(f"Unknown inter-frame attention type: {attention_type}")
 
         patch_token_start = self.patch_token_start
-        camera_and_register_tokens = tokens[:, :, :patch_token_start].reshape(
-            batch_size,
-            num_frames * patch_token_start,
-            embed_dim,
-        )
-        patch_tokens = tokens[:, :, patch_token_start:].reshape(
-            batch_size,
-            num_frames * (num_tokens - patch_token_start),
-            embed_dim,
-        )
+        special = tokens[:, :, :patch_token_start]   # (B, S_local, 17, D)
+        patches = tokens[:, :, patch_token_start:]   # (B, S_local, T-17, D), untouched
 
-        camera_and_register_tokens = self.inter_frame_blocks[block_idx](camera_and_register_tokens, None)
-        tokens = torch.cat([camera_and_register_tokens, patch_tokens], dim=1)
+        ctx = self.seq_parallel_ctx
+        if ctx is not None:
+            special = ctx.all_gather_frames(special, frame_dim=1)  # (B, S_full, 17, D)
+        s_attn = special.shape[1]
+        special = self.inter_frame_blocks[block_idx](
+            special.reshape(batch_size, s_attn * patch_token_start, embed_dim), None
+        ).view(batch_size, s_attn, patch_token_start, embed_dim)
+        if ctx is not None:
+            special = ctx.slice_local_frames(special, frame_dim=1)  # (B, S_local, 17, D)
 
-        camera_and_register_tokens = tokens[:, : num_frames * patch_token_start].view(
-            batch_size,
-            num_frames,
-            patch_token_start,
-            embed_dim,
-        )
-        patch_tokens = tokens[:, num_frames * patch_token_start :].view(
-            batch_size,
-            num_frames,
-            num_tokens - patch_token_start,
-            embed_dim,
-        )
-        return torch.cat([camera_and_register_tokens, patch_tokens], dim=2)
+        return torch.cat([special, patches], dim=2)
 
 
 def _build_patch_embed(patch_size: int, embed_dim: int) -> DinoVisionTransformer:
