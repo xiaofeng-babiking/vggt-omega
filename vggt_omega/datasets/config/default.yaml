@@ -8,6 +8,7 @@ data:
       dataset_configs:
         - _target_: vggt_omega.datasets.vendors.tum.TumDataset
           split: train
+          # Machine-specific path — override for your environment.
           TUM_DIR: /jfs/guibiao/streamVGGT/data/eval/tum
           sequences: ["*"]
           len_train: 100000

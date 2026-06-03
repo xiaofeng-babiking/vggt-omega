@@ -226,6 +226,15 @@ class TumDataset(BaseDataset):
         if self.inside_random:
             seq_index = random.randint(0, self.sequence_list_len - 1)
         if seq_name is None:
+            # len_train is a virtual epoch length usually >> #sequences; the sampler
+            # emits indices in [0, len_train). That only works with inside_random=True
+            # (which remapped seq_index above). Give a clear error, not a raw IndexError.
+            if seq_index is None or not 0 <= seq_index < self.sequence_list_len:
+                raise ValueError(
+                    f"seq_index={seq_index} out of range [0, {self.sequence_list_len}); "
+                    "when len_train > #sequences, set inside_random=True so the sampler "
+                    "index is remapped into range."
+                )
             seq_name = self.sequence_list[seq_index]
         frames = self.data_store[seq_name]
 
