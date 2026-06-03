@@ -244,6 +244,13 @@ class TumDataset(BaseDataset):
         for i in ids:
             rgb_path, depth_path, pose_w2c, ts = frames[int(i)]
             image = read_image_cv2(rgb_path)
+            if image is None:
+                # Associated from rgb.txt, so the file should exist; fail loudly
+                # (a silent skip would yield fewer than img_per_seq frames and
+                # break fixed-V batch stacking).
+                raise FileNotFoundError(
+                    f"TUM: could not read image {rgb_path} (listed in rgb.txt but unreadable)"
+                )
             depth_map = read_tum_depth(depth_path, self.depth_scale)
             original_size = np.array(image.shape[:2])
 
@@ -273,7 +280,7 @@ class TumDataset(BaseDataset):
             cam_points.append(cam_p)
             world_points.append(world_p)
             point_masks.append(pmask)
-            sky_masks.append(depth_map < 0)
+            sky_masks.append(depth_map < 0)  # TUM is indoor: always all-False (sky convention = depth<0)
             timestamps.append(ts)
             original_sizes.append(original_size)
 
