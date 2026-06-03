@@ -13,6 +13,7 @@ requires it at call time.
 """
 from __future__ import annotations
 
+import colorsys
 import logging
 from dataclasses import dataclass
 
@@ -206,6 +207,77 @@ def _log_world_points(ctx: Ctx, i: int) -> None:
         raise ValueError("no valid world points after masking")
     path = f"world/points/{i}" if ctx.accumulate else "world/points"
     rr.log(path, rr.Points3D(pts, colors=cols))
+
+
+def _normalize01(a) -> np.ndarray:
+    """Min-max normalize finite values to [0, 1]; constant/empty -> zeros."""
+    a = np.asarray(a, dtype=np.float32)
+    finite = a[np.isfinite(a)]
+    if finite.size == 0:
+        return np.zeros_like(a)
+    lo, hi = float(finite.min()), float(finite.max())
+    if hi - lo < 1e-9:
+        return np.zeros_like(a)
+    return np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+
+
+def _track_colors(n: int) -> np.ndarray:
+    """Deterministic, well-spread per-track RGB palette (golden-ratio hues)."""
+    out = np.empty((n, 3), dtype=np.uint8)
+    for k in range(n):
+        r, g, b = colorsys.hsv_to_rgb((k * 0.61803398875) % 1.0, 0.8, 1.0)
+        out[k] = [int(r * 255), int(g * 255), int(b * 255)]
+    return out
+
+
+def _log_rgb(ctx: Ctx, i: int) -> None:
+    # Logged on the pinhole entity so the texture maps onto the frustum image plane.
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/image", ctx.rr.Image(ctx.norm.data["images"][i]))
+
+
+def _log_depth(ctx: Ctx, i: int) -> None:
+    dep = ctx.norm.data["depths"][i].astype(np.float32)
+    vis = np.where(dep > 0, dep, 0.0)  # 0=invalid, <0=sky -> clamp to 0
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/image/depth", ctx.rr.DepthImage(vis, meter=1.0))
+
+
+def _log_depth_conf(ctx: Ctx, i: int) -> None:
+    conf = (_normalize01(ctx.norm.data["depth_confs"][i]) * 255).astype(np.uint8)
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/image/depth_conf", ctx.rr.Image(conf))
+
+
+def _log_normals(ctx: Ctx, i: int) -> None:
+    n = np.clip(ctx.norm.data["normals"][i].astype(np.float32), -1.0, 1.0)
+    rgb = ((n * 0.5 + 0.5) * 255).astype(np.uint8)
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/image/normals", ctx.rr.Image(rgb))
+
+
+def _log_semantics(ctx: Ctx, i: int) -> None:
+    seg = ctx.norm.data["semantics"][i].astype(np.int32)
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/image/semantics", ctx.rr.SegmentationImage(seg))
+
+
+def _log_seg(name: str, key: str):
+    """Factory: a boolean-mask logger that renders as a SegmentationImage."""
+    def _fn(ctx: Ctx, i: int) -> None:
+        m = ctx.norm.data[key][i].astype(np.uint8)
+        ctx.rr.log(_camera_path(ctx.norm, i) + f"/image/{name}", ctx.rr.SegmentationImage(m))
+    _fn.__name__ = f"_log_{name}"
+    return _fn
+
+
+def _log_tracks(ctx: Ctx, i: int) -> None:
+    tr = np.asarray(ctx.norm.data["tracks"][i], dtype=np.float32)  # (N, 2)
+    colors = _track_colors(tr.shape[0])
+    ctx.rr.log(
+        _camera_path(ctx.norm, i) + "/image/tracks",
+        ctx.rr.Points2D(tr, colors=colors, radii=2.0),
+    )
+
+
+def _log_text(ctx: Ctx, i: int) -> None:
+    txt = ctx.norm.data["texts"][i]
+    ctx.rr.log(_camera_path(ctx.norm, i) + "/text", ctx.rr.TextDocument(str(txt)))
 
 
 def log_batch(*args, **kwargs):  # noqa: D401 - real implementation added in a later task

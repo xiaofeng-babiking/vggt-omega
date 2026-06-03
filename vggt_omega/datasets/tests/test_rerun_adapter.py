@@ -147,3 +147,19 @@ def test_camera_path_uses_camera_id_when_present():
 def test_frame_hw_reads_spatial_shape():
     norm = rerun_adapter.normalize_sample(_make_raw_sample(V=2, H=8, W=8))
     assert rerun_adapter._frame_hw(norm) == (8, 8)
+
+
+def test_normalize01_maps_to_unit_range():
+    out = rerun_adapter._normalize01(np.array([[0.0, 5.0, 10.0]], dtype=np.float32))
+    np.testing.assert_allclose(out, [[0.0, 0.5, 1.0]], atol=1e-6)
+
+
+def test_normalize01_constant_input_is_zeros():
+    out = rerun_adapter._normalize01(np.full((2, 2), 3.0, dtype=np.float32))
+    assert np.all(out == 0.0)
+
+
+def test_track_colors_shape_and_dtype():
+    colors = rerun_adapter._track_colors(5)
+    assert colors.shape == (5, 3)
+    assert colors.dtype == np.uint8
