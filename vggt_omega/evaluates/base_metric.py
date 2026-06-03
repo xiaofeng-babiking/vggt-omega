@@ -138,10 +138,10 @@ class BaseMetric(ABC):
         self.check()
         self.preprocess()
 
-        self.metrics = {
-            report_name: getattr(self, method_name)()
-            for report_name, method_name in self._metric_funcs.items()
-        }
+        self.metrics = {}
+        for report_name, method_name in self._metric_funcs.items():
+            self.metrics[report_name] = {}
+            self.metrics[report_name].update(getattr(self, method_name)())
 
         self.visualize(vis_path)
 
