@@ -51,3 +51,27 @@ def test_shard_frames_requires_divisible():
 
     with pytest.raises(ValueError):
         shard_frames(list(range(7)), sp_size=2, sp_rank=0)
+
+
+def test_install_sets_ctx_on_global_blocks_only():
+    import types
+    from vggt_omega.distributed import install_sequence_parallel
+
+    def fake_attn():
+        return types.SimpleNamespace(seq_parallel_ctx="UNSET")
+
+    blocks = [types.SimpleNamespace(attn=fake_attn()) for _ in range(6)]
+    atypes = ["global", "global", "register", "global", "register", "global"]
+    aggregator = types.SimpleNamespace(
+        seq_parallel_ctx=None, inter_frame_blocks=blocks, inter_frame_attention_types=atypes
+    )
+    camera_head = types.SimpleNamespace(seq_parallel_ctx="UNSET")
+    model = types.SimpleNamespace(aggregator=aggregator, camera_head=camera_head)
+
+    sentinel = object()
+    install_sequence_parallel(model, sentinel)
+
+    assert aggregator.seq_parallel_ctx is sentinel
+    assert camera_head.seq_parallel_ctx is sentinel
+    for block, atype in zip(blocks, atypes):
+        assert block.attn.seq_parallel_ctx is (sentinel if atype == "global" else None)
