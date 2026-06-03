@@ -11,9 +11,14 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import random
 
 import numpy as np
 from PIL import Image
+
+from vggt_omega.datasets.base_dataset import BaseDataset
+from vggt_omega.datasets.dataset_util import read_image_cv2
+from vggt_omega.datasets.modality import Modality
 
 # Official TUM per-camera pinhole intrinsics (fx, fy, cx, cy).
 _TUM_INTRINSICS = {
@@ -133,3 +138,160 @@ def associate_tum_sequence(seq_dir: str, max_diff: float = 0.02):
             )
         )
     return frames
+
+
+class TumDataset(BaseDataset):
+    """TUM RGB-D as a VGGT-Omega BaseDataset (video sampling, metric depth)."""
+
+    AVAILABLE = frozenset(
+        {
+            Modality.IMAGE,
+            Modality.DEPTH,
+            Modality.INTRINSICS,
+            Modality.EXTRINSICS,
+            Modality.TIMESTAMP,
+            Modality.POINT_MASK,
+            Modality.WORLD_POINTS,
+            Modality.CAM_POINTS,
+            Modality.SKY_MASK,
+        }
+    )
+
+    def __init__(
+        self,
+        common_conf,
+        split: str = "train",
+        TUM_DIR: str = None,
+        sequences=None,
+        len_train: int = 100000,
+        len_test: int = 10000,
+        expand_ratio: int = 8,
+        assoc_max_diff: float = 0.02,
+        depth_scale: float = 5000.0,
+        intrinsics=None,
+        min_num_images: int = 24,
+    ):
+        super().__init__(common_conf=common_conf)
+        # per-dataset flags BaseDataset.process_one_image / get_data rely on
+        self.training = common_conf.training
+        self.inside_random = common_conf.inside_random
+        self.allow_duplicate_img = common_conf.allow_duplicate_img
+        self.get_nearby = common_conf.get_nearby
+
+        if TUM_DIR is None:
+            raise ValueError("TUM_DIR must be specified")
+        self.TUM_DIR = TUM_DIR
+        self.expand_ratio = expand_ratio
+        self.assoc_max_diff = assoc_max_diff
+        self.depth_scale = depth_scale
+        self.intrinsics_override = intrinsics
+        self.min_num_images = min_num_images
+        self.len_train = len_train if split == "train" else len_test
+        self.available_modalities = self.AVAILABLE
+
+        patterns = sequences or ["*"]
+        seq_dirs = sorted(
+            {
+                d
+                for pat in patterns
+                for d in glob.glob(os.path.join(TUM_DIR, pat))
+                if os.path.isdir(d)
+            }
+        )
+        self.data_store = {}
+        for sd in seq_dirs:
+            name = os.path.basename(sd.rstrip("/"))
+            frames = associate_tum_sequence(sd, assoc_max_diff)
+            if len(frames) < min_num_images:
+                logging.warning(
+                    "TUM seq %s: only %d aligned frames (< %d); skipping",
+                    name, len(frames), min_num_images,
+                )
+                continue
+            self.data_store[name] = frames
+
+        self.sequence_list = list(self.data_store.keys())
+        self.sequence_list_len = len(self.sequence_list)
+        if self.sequence_list_len == 0:
+            raise ValueError(f"No usable TUM sequences under {TUM_DIR}")
+
+    def get_data(
+        self,
+        seq_index: int = None,
+        img_per_seq: int = None,
+        seq_name: str = None,
+        ids=None,
+        aspect_ratio: float = 1.0,
+    ) -> dict:
+        if self.inside_random:
+            seq_index = random.randint(0, self.sequence_list_len - 1)
+        if seq_name is None:
+            seq_name = self.sequence_list[seq_index]
+        frames = self.data_store[seq_name]
+
+        if ids is None:
+            ids = np.random.choice(len(frames), img_per_seq, replace=self.allow_duplicate_img)
+        if self.get_nearby:
+            ids = self.get_nearby_ids(ids, len(frames), expand_ratio=self.expand_ratio)
+
+        target_image_shape = self.get_target_shape(aspect_ratio)
+        K = tum_intrinsics(seq_name, self.intrinsics_override)
+
+        images, depths, extrinsics, intrinsics = [], [], [], []
+        cam_points, world_points, point_masks = [], [], []
+        sky_masks, timestamps, original_sizes = [], [], []
+
+        for i in ids:
+            rgb_path, depth_path, pose_w2c, ts = frames[int(i)]
+            image = read_image_cv2(rgb_path)
+            depth_map = read_tum_depth(depth_path, self.depth_scale)
+            original_size = np.array(image.shape[:2])
+
+            (
+                image,
+                depth_map,
+                extri,
+                intri,
+                world_p,
+                cam_p,
+                pmask,
+                _,
+            ) = self.process_one_image(
+                image,
+                depth_map,
+                pose_w2c.copy(),
+                K.copy(),
+                original_size,
+                target_image_shape,
+                filepath=rgb_path,
+            )
+
+            images.append(image)
+            depths.append(depth_map)
+            extrinsics.append(extri)
+            intrinsics.append(intri)
+            cam_points.append(cam_p)
+            world_points.append(world_p)
+            point_masks.append(pmask)
+            sky_masks.append(depth_map < 0)
+            timestamps.append(ts)
+            original_sizes.append(original_size)
+
+        return {
+            "seq_name": "tum_" + seq_name,
+            "ids": np.array(ids),
+            "frame_num": len(images),
+            "images": images,
+            "depths": depths,
+            "extrinsics": extrinsics,
+            "intrinsics": intrinsics,
+            "cam_points": cam_points,
+            "world_points": world_points,
+            "point_masks": point_masks,
+            "sky_masks": sky_masks,
+            "timestamps": np.array(timestamps, dtype=np.float64),
+            "original_sizes": original_sizes,
+            "is_metric": True,
+            "is_video": True,
+            "modalities": set(self.available_modalities),
+        }
