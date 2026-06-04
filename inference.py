@@ -150,230 +150,281 @@ def write_ply(path: str, points: np.ndarray, colors: np.ndarray) -> None:
 
 
 # --- 1. Load a TUM sequence (RGB + GT depth/poses/intrinsics) -----------------
-common_conf = OmegaConf.create(
-    {
-        "img_size": img_size,
-        "patch_size": 16,
-        "training": False,       # no scale augmentation at eval
-        "inside_random": False,  # honor the explicit seq_index / ids below
-        "allow_duplicate_img": False,
-        "get_nearby": False,     # use our ordered ids verbatim (not a random window)
-        "rescale": True,
-        "rescale_aug": False,
-        "landscape_check": False,
-        "augs": {"scales": None},
-    }
-)
-dataset = TumDataset(
-    common_conf=common_conf,
-    split="train",
-    TUM_DIR=TUM_DIR,
-    sequences=[sequence],
-    len_train=100000,  # virtual length; unused since we call get_data with explicit ids
-)
-num_available = len(dataset.data_store[dataset.sequence_list[0]])
-if num_frames is None or num_frames >= num_available:
-    frame_ids = np.arange(num_available)                                  # ALL frames, ordered
-else:
-    frame_ids = np.linspace(0, num_available - 1, num_frames).round().astype(int)
-target_h = int(img_size * aspect_ratio) // 16 * 16
-logger.info(f"[{sequence}] loading {len(frame_ids)} / {num_available} frames @ {target_h}x{img_size} (HxW) ...")
-t_load = time.time()
-batch = dataset.get_data(seq_index=0, ids=frame_ids, aspect_ratio=aspect_ratio)
-logger.info(f"loaded in {time.time() - t_load:.1f}s")
-
-images_hwc = np.stack(batch["images"])                      # (S, H, W, 3) uint8, RGB
-gt_depth = np.stack(batch["depths"]).astype(np.float32)     # (S, H, W) metres, 0=invalid
-gt_extrinsics = np.stack(batch["extrinsics"]).astype(np.float32)  # (S, 3, 4) world->cam
-gt_world_points = np.stack(batch["world_points"]).astype(np.float32)  # (S, H, W, 3)
-gt_point_masks = np.stack(batch["point_masks"]).astype(bool)      # (S, H, W)
-
-# --- 2. Inference on those exact frames --------------------------------------
-model = VGGTOmega().to(device).eval()
-model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
-gpu_status("model loaded")
-
-images = (
-    torch.from_numpy(images_hwc.astype(np.float32))
-    .permute(0, 3, 1, 2)
-    .div(255.0)
-    .contiguous()
-    .to(device)
-)
-logger.info(f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ...")
-if device == "cuda":
-    torch.cuda.reset_peak_memory_stats()
-t_infer = time.time()
-try:
-    with torch.inference_mode():
-        predictions = model(images)
-    if device == "cuda":
-        torch.cuda.synchronize()
-except torch.cuda.OutOfMemoryError:
-    gpu_status("OOM")
-    total = torch.cuda.mem_get_info()[1] / 1e9
-    # native-VGA cost ~= 5.9 + 0.087*N GB (README curve scaled to ~1200 tok/frame).
-    fits = int(max(0, (total - 5.9) / 0.087))
-    raise SystemExit(
-        f"\nCUDA OOM on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]}. "
-        f"A single {total:.0f}G GPU fits ~{fits} native-VGA frames in one pass. "
-        f"Set num_frames<=~{fits}, or use a lower resolution (img_size=512 -> ~25% cheaper)."
-    )
-logger.info(f"inference done in {time.time() - t_infer:.1f}s")
-gpu_status("after forward")
-
-extrinsics, intrinsics = encoding_to_camera(
-    predictions["pose_enc"], predictions["images"].shape[-2:]
-)
-
-# Pull to CPU/numpy (float() guards against bf16, which numpy can't hold).
-pred_depth = predictions["depth"].float().cpu().numpy()[0]          # (S, H, W, 1)
-pred_conf = predictions["depth_conf"].float().cpu().numpy()[0]      # (S, H, W)
-images_np = predictions["images"].float().cpu().numpy()[0]          # (S, 3, H, W) [0,1]
-pred_extrinsics = extrinsics.float().cpu().numpy()[0]               # (S, 3, 4) world->cam
-pred_intrinsics = intrinsics.float().cpu().numpy()[0]               # (S, 3, 3) pixels
-
-num_f, height, width = pred_depth.shape[:3]
-pred_depth_2d = pred_depth[..., 0]                                  # (S, H, W)
-images_hwc_pred = np.transpose(images_np, (0, 2, 3, 1))            # (S, H, W, 3)
-
-# --- 3. Dump predicted depth/conf PNGs + cameras.json ------------------------
-depth_dir = os.path.join(output_dir, "depth")
-conf_dir = os.path.join(output_dir, "conf")
-os.makedirs(depth_dir, exist_ok=True)
-os.makedirs(conf_dir, exist_ok=True)
-
-valid_depth = np.isfinite(pred_depth_2d) & (pred_depth_2d > 0)
-depth_max = float(pred_depth_2d[valid_depth].max()) if valid_depth.any() else 1.0
-depth_scale = 65535.0 / depth_max if depth_max > 0 else 1.0
-finite_conf = np.isfinite(pred_conf)
-conf_max = float(pred_conf[finite_conf].max()) if finite_conf.any() else 1.0
-conf_scale = 65535.0 / conf_max if conf_max > 0 else 1.0
-
-frames_meta = []
-for i in tqdm(range(num_f), desc="dump depth/conf", unit="frame"):
-    name = f"frame_{i:04d}.png"
-    save_uint16_image(pred_depth_2d[i], depth_scale, os.path.join(depth_dir, name))
-    save_uint16_image(pred_conf[i], conf_scale, os.path.join(conf_dir, name))
-    frames_meta.append(
+def build_dataset_and_frame_ids():
+    """Construct the TUM dataset and resolve the ordered frame ids to load."""
+    common_conf = OmegaConf.create(
         {
-            "index": int(i),
-            "frame_id": int(frame_ids[i]),
-            "depth": os.path.join("depth", name),
-            "conf": os.path.join("conf", name),
-            "intrinsics": pred_intrinsics[i].tolist(),
-            "extrinsics": pred_extrinsics[i].tolist(),
+            "img_size": img_size,
+            "patch_size": 16,
+            "training": False,       # no scale augmentation at eval
+            "inside_random": False,  # honor the explicit seq_index / ids below
+            "allow_duplicate_img": False,
+            "get_nearby": False,     # use our ordered ids verbatim (not a random window)
+            "rescale": True,
+            "rescale_aug": False,
+            "landscape_check": False,
+            "augs": {"scales": None},
         }
     )
+    dataset = TumDataset(
+        common_conf=common_conf,
+        split="train",
+        TUM_DIR=TUM_DIR,
+        sequences=[sequence],
+        len_train=100000,  # virtual length; unused since we call get_data with explicit ids
+    )
+    num_available = len(dataset.data_store[dataset.sequence_list[0]])
+    if num_frames is None or num_frames >= num_available:
+        frame_ids = np.arange(num_available)                                  # ALL frames, ordered
+    else:
+        frame_ids = np.linspace(0, num_available - 1, num_frames).round().astype(int)
+    target_h = int(img_size * aspect_ratio) // 16 * 16
+    logger.info(f"[{sequence}] loading {len(frame_ids)} / {num_available} frames @ {target_h}x{img_size} (HxW) ...")
+    return dataset, frame_ids
 
-camera_meta = {
-    "scene": sequence,
-    "image_width": int(width),
-    "image_height": int(height),
-    "num_frames": int(num_f),
-    "depth_scale": depth_scale,
-    "depth_max": depth_max,
-    "conf_scale": conf_scale,
-    "conf_max": conf_max,
-    "depth_unit": "uint16_value / depth_scale",
-    "extrinsics_convention": "world_to_camera (OpenCV), 3x4 [R|t]",
-    "intrinsics_convention": "pixels, 3x3 K",
-    "frames": frames_meta,
-}
-with open(os.path.join(output_dir, "cameras.json"), "w") as f:
-    json.dump(camera_meta, f, indent=2)
 
-# --- 4. Fuse predicted depth + RGB into a world-frame PLY --------------------
-pred_world_points = unproject_depth_map_to_point_map(
-    pred_depth, pred_extrinsics, pred_intrinsics
-)  # (S, H, W, 3)
-points = pred_world_points.reshape(-1, 3)
-colors = (images_hwc_pred.reshape(-1, 3) * 255.0).clip(0, 255).astype(np.uint8)
-conf_flat = pred_conf.reshape(-1)
-depth_flat = pred_depth_2d.reshape(-1)
+def load_frames(dataset, frame_ids, aspect_ratio):
+    """Load RGB + GT depth/poses/world-points/masks for ``frame_ids``."""
+    t_load = time.time()
+    batch = dataset.get_data(seq_index=0, ids=frame_ids, aspect_ratio=aspect_ratio)
+    logger.info(f"loaded in {time.time() - t_load:.1f}s")
 
-mask = np.isfinite(points).all(axis=1) & np.isfinite(conf_flat) & (depth_flat > 0)
-if conf_percentile > 0 and mask.any():
-    threshold = np.percentile(conf_flat[mask], conf_percentile)
-    mask &= conf_flat >= threshold
-points, colors = points[mask], colors[mask]
+    images_hwc = np.stack(batch["images"])                      # (S, H, W, 3) uint8, RGB
+    gt_depth = np.stack(batch["depths"]).astype(np.float32)     # (S, H, W) metres, 0=invalid
+    gt_extrinsics = np.stack(batch["extrinsics"]).astype(np.float32)  # (S, 3, 4) world->cam
+    gt_world_points = np.stack(batch["world_points"]).astype(np.float32)  # (S, H, W, 3)
+    gt_point_masks = np.stack(batch["point_masks"]).astype(bool)      # (S, H, W)
+    return {
+        "images_hwc": images_hwc,
+        "gt_depth": gt_depth,
+        "gt_extrinsics": gt_extrinsics,
+        "gt_world_points": gt_world_points,
+        "gt_point_masks": gt_point_masks,
+    }
 
-if max_points and points.shape[0] > max_points:
-    rng = np.random.default_rng(0)
-    keep = rng.choice(points.shape[0], size=max_points, replace=False)
-    points, colors = points[keep], colors[keep]
 
-ply_path = os.path.join(output_dir, "pointcloud.ply")
-write_ply(ply_path, points, colors)
+# --- 2. Inference on those exact frames --------------------------------------
+def run_model(images_hwc, ctx=None):
+    """Build VGGT-Omega, run the forward pass, and extract prediction arrays."""
+    model = VGGTOmega().to(device).eval()
+    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+    if ctx is not None:
+        from vggt_omega.distributed import install_sequence_parallel
+        install_sequence_parallel(model, ctx)
+    gpu_status("model loaded")
 
-# --- 5. Evaluate against TUM ground truth ------------------------------------
-metrics_dir = os.path.join(output_dir, "metrics")
-os.makedirs(metrics_dir, exist_ok=True)
+    images = (
+        torch.from_numpy(images_hwc.astype(np.float32))
+        .permute(0, 3, 1, 2)
+        .div(255.0)
+        .contiguous()
+        .to(device)
+    )
+    logger.info(f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ...")
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    t_infer = time.time()
+    try:
+        with torch.inference_mode():
+            predictions = model(images)
+        if device == "cuda":
+            torch.cuda.synchronize()
+    except torch.cuda.OutOfMemoryError:
+        gpu_status("OOM")
+        total = torch.cuda.mem_get_info()[1] / 1e9
+        # native-VGA cost ~= 5.9 + 0.087*N GB (README curve scaled to ~1200 tok/frame).
+        fits = int(max(0, (total - 5.9) / 0.087))
+        raise SystemExit(
+            f"\nCUDA OOM on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]}. "
+            f"A single {total:.0f}G GPU fits ~{fits} native-VGA frames in one pass. "
+            f"Set num_frames<=~{fits}, or use a lower resolution (img_size=512 -> ~25% cheaper)."
+        )
+    logger.info(f"inference done in {time.time() - t_infer:.1f}s")
+    gpu_status("after forward")
 
-# 5a. Camera pose: ATE / RPE on camera-to-world trajectories (Sim3-aligned,
-# since VGGT poses are metric only up to a global scale).
-gt_c2w = world_to_camera_to_camera_to_world(gt_extrinsics)
-pred_c2w = world_to_camera_to_camera_to_world(pred_extrinsics)
-camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
-    vis_path=os.path.join(metrics_dir, "camera_pose")
-)
+    extrinsics, intrinsics = encoding_to_camera(
+        predictions["pose_enc"], predictions["images"].shape[-2:]
+    )
 
-# 5b. Mono depth: per-frame Abs Rel / delta (per-image median alignment),
-# aggregated to the headline means across frames.
-per_frame_depth = []
-for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
-    res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
-    per_frame_depth.append(res)
-mono_depth_metrics = {
-    "abs_rel_mean": float(np.mean([d["abs_rel"]["mean"] for d in per_frame_depth])),
-    "abs_rel_rmse": float(np.mean([d["abs_rel"]["rmse"] for d in per_frame_depth])),
-    "delta1": float(np.mean([d["delta"]["delta1"] for d in per_frame_depth])),
-    "delta2": float(np.mean([d["delta"]["delta2"] for d in per_frame_depth])),
-    "delta3": float(np.mean([d["delta"]["delta3"] for d in per_frame_depth])),
-    "num_frames": int(num_f),
-}
+    # Pull to CPU/numpy (float() guards against bf16, which numpy can't hold).
+    pred_depth = predictions["depth"].float().cpu().numpy()[0]          # (S, H, W, 1)
+    pred_conf = predictions["depth_conf"].float().cpu().numpy()[0]      # (S, H, W)
+    images_np = predictions["images"].float().cpu().numpy()[0]          # (S, 3, H, W) [0,1]
+    pred_extrinsics = extrinsics.float().cpu().numpy()[0]               # (S, 3, 4) world->cam
+    pred_intrinsics = intrinsics.float().cpu().numpy()[0]               # (S, 3, 3) pixels
+    return {
+        "pred_depth": pred_depth,
+        "pred_conf": pred_conf,
+        "images_pred": images_np,
+        "pred_extrinsics": pred_extrinsics,
+        "pred_intrinsics": pred_intrinsics,
+    }
 
-# 5c. Point cloud: GT cloud from TUM world points; predicted cloud from predicted
-# depth+poses. ICP+scale registers the prediction before scoring.
-gt_cloud = gt_world_points[gt_point_masks].reshape(-1, 3)
-pred_cloud = pred_world_points.reshape(-1, 3)
-pred_cloud = pred_cloud[np.isfinite(pred_cloud).all(axis=1) & (depth_flat > 0)]
-pointcloud_metrics = PointcloudMetric(
-    gt_cloud,
-    pred_cloud,
-    align="icp",
-    align_scale=True,
-    threshold=fscore_threshold,
-    max_points=metric_max_points,
-    seed=0,
-).run(vis_path=os.path.join(metrics_dir, "pointcloud"))
 
-all_metrics = {
-    "scene": sequence,
-    "num_frames": int(num_f),
-    "resolution": [int(height), int(width)],
-    "camera_pose": camera_pose_metrics,
-    "mono_depth": mono_depth_metrics,
-    "pointcloud": pointcloud_metrics,
-}
-with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
-    json.dump(all_metrics, f, indent=2)
+def dump_and_eval(frame_ids, loaded, pred):
+    """Dump predictions, fuse the PLY, evaluate all metrics, and report."""
+    pred_depth = pred["pred_depth"]
+    pred_conf = pred["pred_conf"]
+    images_np = pred["images_pred"]
+    pred_extrinsics = pred["pred_extrinsics"]
+    pred_intrinsics = pred["pred_intrinsics"]
+    gt_depth = loaded["gt_depth"]
+    gt_extrinsics = loaded["gt_extrinsics"]
+    gt_world_points = loaded["gt_world_points"]
+    gt_point_masks = loaded["gt_point_masks"]
 
-# --- 6. Report ---------------------------------------------------------------
-logger.info(
-    f"[{sequence}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
-    f"  point cloud: {points.shape[0]} points -> {ply_path}\n"
-    f"  camera pose (Sim3-aligned):\n"
-    f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m\n"
-    f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m\n"
-    f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg\n"
-    f"  mono depth (median-aligned, mean over frames):\n"
-    f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}\n"
-    f"    delta1  = {mono_depth_metrics['delta1']:.4f}\n"
-    f"  point cloud (ICP+scale aligned):\n"
-    f"    chamfer mean = {pointcloud_metrics['chamfer']['mean']:.4f} m\n"
-    f"    accuracy mean = {pointcloud_metrics['accuracy']['mean']:.4f} m\n"
-    f"    completeness mean = {pointcloud_metrics['completeness']['mean']:.4f} m\n"
-    f"    F-score@{fscore_threshold} = {pointcloud_metrics['fscore']['fscore']:.4f}\n"
-    f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}"
-)
+    num_f, height, width = pred_depth.shape[:3]
+    pred_depth_2d = pred_depth[..., 0]                                  # (S, H, W)
+    images_hwc_pred = np.transpose(images_np, (0, 2, 3, 1))            # (S, H, W, 3)
+
+    # --- 3. Dump predicted depth/conf PNGs + cameras.json ------------------------
+    depth_dir = os.path.join(output_dir, "depth")
+    conf_dir = os.path.join(output_dir, "conf")
+    os.makedirs(depth_dir, exist_ok=True)
+    os.makedirs(conf_dir, exist_ok=True)
+
+    valid_depth = np.isfinite(pred_depth_2d) & (pred_depth_2d > 0)
+    depth_max = float(pred_depth_2d[valid_depth].max()) if valid_depth.any() else 1.0
+    depth_scale = 65535.0 / depth_max if depth_max > 0 else 1.0
+    finite_conf = np.isfinite(pred_conf)
+    conf_max = float(pred_conf[finite_conf].max()) if finite_conf.any() else 1.0
+    conf_scale = 65535.0 / conf_max if conf_max > 0 else 1.0
+
+    frames_meta = []
+    for i in tqdm(range(num_f), desc="dump depth/conf", unit="frame"):
+        name = f"frame_{i:04d}.png"
+        save_uint16_image(pred_depth_2d[i], depth_scale, os.path.join(depth_dir, name))
+        save_uint16_image(pred_conf[i], conf_scale, os.path.join(conf_dir, name))
+        frames_meta.append(
+            {
+                "index": int(i),
+                "frame_id": int(frame_ids[i]),
+                "depth": os.path.join("depth", name),
+                "conf": os.path.join("conf", name),
+                "intrinsics": pred_intrinsics[i].tolist(),
+                "extrinsics": pred_extrinsics[i].tolist(),
+            }
+        )
+
+    camera_meta = {
+        "scene": sequence,
+        "image_width": int(width),
+        "image_height": int(height),
+        "num_frames": int(num_f),
+        "depth_scale": depth_scale,
+        "depth_max": depth_max,
+        "conf_scale": conf_scale,
+        "conf_max": conf_max,
+        "depth_unit": "uint16_value / depth_scale",
+        "extrinsics_convention": "world_to_camera (OpenCV), 3x4 [R|t]",
+        "intrinsics_convention": "pixels, 3x3 K",
+        "frames": frames_meta,
+    }
+    with open(os.path.join(output_dir, "cameras.json"), "w") as f:
+        json.dump(camera_meta, f, indent=2)
+
+    # --- 4. Fuse predicted depth + RGB into a world-frame PLY --------------------
+    pred_world_points = unproject_depth_map_to_point_map(
+        pred_depth, pred_extrinsics, pred_intrinsics
+    )  # (S, H, W, 3)
+    points = pred_world_points.reshape(-1, 3)
+    colors = (images_hwc_pred.reshape(-1, 3) * 255.0).clip(0, 255).astype(np.uint8)
+    conf_flat = pred_conf.reshape(-1)
+    depth_flat = pred_depth_2d.reshape(-1)
+
+    mask = np.isfinite(points).all(axis=1) & np.isfinite(conf_flat) & (depth_flat > 0)
+    if conf_percentile > 0 and mask.any():
+        threshold = np.percentile(conf_flat[mask], conf_percentile)
+        mask &= conf_flat >= threshold
+    points, colors = points[mask], colors[mask]
+
+    if max_points and points.shape[0] > max_points:
+        rng = np.random.default_rng(0)
+        keep = rng.choice(points.shape[0], size=max_points, replace=False)
+        points, colors = points[keep], colors[keep]
+
+    ply_path = os.path.join(output_dir, "pointcloud.ply")
+    write_ply(ply_path, points, colors)
+
+    # --- 5. Evaluate against TUM ground truth ------------------------------------
+    metrics_dir = os.path.join(output_dir, "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+
+    # 5a. Camera pose: ATE / RPE on camera-to-world trajectories (Sim3-aligned,
+    # since VGGT poses are metric only up to a global scale).
+    gt_c2w = world_to_camera_to_camera_to_world(gt_extrinsics)
+    pred_c2w = world_to_camera_to_camera_to_world(pred_extrinsics)
+    camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
+        vis_path=os.path.join(metrics_dir, "camera_pose")
+    )
+
+    # 5b. Mono depth: per-frame Abs Rel / delta (per-image median alignment),
+    # aggregated to the headline means across frames.
+    per_frame_depth = []
+    for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
+        res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
+        per_frame_depth.append(res)
+    mono_depth_metrics = {
+        "abs_rel_mean": float(np.mean([d["abs_rel"]["mean"] for d in per_frame_depth])),
+        "abs_rel_rmse": float(np.mean([d["abs_rel"]["rmse"] for d in per_frame_depth])),
+        "delta1": float(np.mean([d["delta"]["delta1"] for d in per_frame_depth])),
+        "delta2": float(np.mean([d["delta"]["delta2"] for d in per_frame_depth])),
+        "delta3": float(np.mean([d["delta"]["delta3"] for d in per_frame_depth])),
+        "num_frames": int(num_f),
+    }
+
+    # 5c. Point cloud: GT cloud from TUM world points; predicted cloud from predicted
+    # depth+poses. ICP+scale registers the prediction before scoring.
+    gt_cloud = gt_world_points[gt_point_masks].reshape(-1, 3)
+    pred_cloud = pred_world_points.reshape(-1, 3)
+    pred_cloud = pred_cloud[np.isfinite(pred_cloud).all(axis=1) & (depth_flat > 0)]
+    pointcloud_metrics = PointcloudMetric(
+        gt_cloud,
+        pred_cloud,
+        align="icp",
+        align_scale=True,
+        threshold=fscore_threshold,
+        max_points=metric_max_points,
+        seed=0,
+    ).run(vis_path=os.path.join(metrics_dir, "pointcloud"))
+
+    all_metrics = {
+        "scene": sequence,
+        "num_frames": int(num_f),
+        "resolution": [int(height), int(width)],
+        "camera_pose": camera_pose_metrics,
+        "mono_depth": mono_depth_metrics,
+        "pointcloud": pointcloud_metrics,
+    }
+    with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
+        json.dump(all_metrics, f, indent=2)
+
+    # --- 6. Report ---------------------------------------------------------------
+    logger.info(
+        f"[{sequence}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
+        f"  point cloud: {points.shape[0]} points -> {ply_path}\n"
+        f"  camera pose (Sim3-aligned):\n"
+        f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m\n"
+        f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m\n"
+        f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg\n"
+        f"  mono depth (median-aligned, mean over frames):\n"
+        f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}\n"
+        f"    delta1  = {mono_depth_metrics['delta1']:.4f}\n"
+        f"  point cloud (ICP+scale aligned):\n"
+        f"    chamfer mean = {pointcloud_metrics['chamfer']['mean']:.4f} m\n"
+        f"    accuracy mean = {pointcloud_metrics['accuracy']['mean']:.4f} m\n"
+        f"    completeness mean = {pointcloud_metrics['completeness']['mean']:.4f} m\n"
+        f"    F-score@{fscore_threshold} = {pointcloud_metrics['fscore']['fscore']:.4f}\n"
+        f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}"
+    )
+
+
+def main():
+    dataset, frame_ids = build_dataset_and_frame_ids()
+    loaded = load_frames(dataset, frame_ids, aspect_ratio)
+    pred = run_model(loaded["images_hwc"])
+    dump_and_eval(frame_ids, loaded, pred)
+
+
+if __name__ == "__main__":
+    main()
