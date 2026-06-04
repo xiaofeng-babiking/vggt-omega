@@ -75,3 +75,20 @@ def test_install_sets_ctx_on_global_blocks_only():
     assert camera_head.seq_parallel_ctx is sentinel
     for block, atype in zip(blocks, atypes):
         assert block.attn.seq_parallel_ctx is (sentinel if atype == "global" else None)
+
+
+def test_install_rejects_enabled_text_alignment_head():
+    import types
+    from vggt_omega.distributed import install_sequence_parallel
+
+    aggregator = types.SimpleNamespace(
+        seq_parallel_ctx=None, inter_frame_blocks=[], inter_frame_attention_types=[]
+    )
+    model = types.SimpleNamespace(
+        aggregator=aggregator, camera_head=None, text_alignment_head=object()
+    )
+    # The alignment head is not SP-aware -> installing a context must fail loudly.
+    with pytest.raises(NotImplementedError):
+        install_sequence_parallel(model, object())
+    # ctx=None (single-GPU) is always allowed, even with alignment enabled.
+    install_sequence_parallel(model, None)

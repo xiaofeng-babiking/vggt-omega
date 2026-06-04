@@ -48,6 +48,16 @@ class ParallelContext:
 
 def install_sequence_parallel(model: torch.nn.Module, ctx: ParallelContext | None) -> None:
     """Wire ``ctx`` into the SP-aware modules. ``ctx=None`` -> single-GPU (no-op)."""
+    if ctx is not None and getattr(model, "text_alignment_head", None) is not None:
+        # TextAlignmentHead runs a cross-frame readout over the special tokens
+        # (like the camera trunk) but is NOT sequence-parallel-aware: under
+        # frame-sharding it would silently see only the local shard's frames.
+        # Fail loudly rather than return wrong embeddings.
+        raise NotImplementedError(
+            "TextAlignmentHead is not sequence-parallel-aware; disable it "
+            "(enable_alignment=False) for multi-GPU inference, or make its "
+            "cross-frame readout gather special tokens first."
+        )
     agg = model.aggregator
     agg.seq_parallel_ctx = ctx
     for block, atype in zip(agg.inter_frame_blocks, agg.inter_frame_attention_types):
