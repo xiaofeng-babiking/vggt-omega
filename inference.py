@@ -18,24 +18,33 @@ a global scale/pose, so depth uses a per-image median scale, poses a Umeyama
 
 import json
 import os
+import time
 
 import cv2
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 from vggt_omega.models import VGGTOmega
+from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
 from vggt_omega.datasets.vendors.tum import TumDataset
 from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric, PointcloudMetric
+
+logger = get_logger("vggt_omega.inference")
 
 # --- configuration -----------------------------------------------------------
 checkpoint_path = "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt"
 TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
 sequence = "rgbd_dataset_freiburg3_sitting_halfsphere"
-num_frames = 24
-# TUM is 640x480 -> aspect (H/W) 0.75; this maps to a 512x384 (WxH) model input.
+# Use TUM's RAW VGA resolution: img_size is the long side (W=640); aspect (H/W)=0.75
+# -> get_target_shape gives [480, 640] (HxW), i.e. native 640x480 (both /16-divisible).
+img_size = 640
 aspect_ratio = 0.75
+# None -> use every associated frame; else cap to this many (evenly spaced, ordered).
+# 1069 frames @ native VGA OOMs an 80G GPU (~99G); ~700 is the largest native-VGA fit.
+num_frames = 700
 
 output_dir = os.path.join("outputs", sequence)
 # Drop the lowest `conf_percentile`% of points (by confidence) from the fused cloud.
@@ -47,6 +56,19 @@ metric_max_points = 200_000
 fscore_threshold = 0.05
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def gpu_status(tag: str) -> None:
+    """Log current / peak GPU memory and free/total (no-op on CPU)."""
+    if device != "cuda":
+        return
+    free, total = torch.cuda.mem_get_info()
+    logger.info(
+        f"[GPU {tag}] alloc={torch.cuda.memory_allocated() / 1e9:.1f}G "
+        f"reserved={torch.cuda.memory_reserved() / 1e9:.1f}G "
+        f"peak={torch.cuda.max_memory_allocated() / 1e9:.1f}G "
+        f"free={free / 1e9:.1f}G / {total / 1e9:.1f}G"
+    )
 
 
 # --- geometry / IO helpers ---------------------------------------------------
@@ -130,7 +152,7 @@ def write_ply(path: str, points: np.ndarray, colors: np.ndarray) -> None:
 # --- 1. Load a TUM sequence (RGB + GT depth/poses/intrinsics) -----------------
 common_conf = OmegaConf.create(
     {
-        "img_size": 512,
+        "img_size": img_size,
         "patch_size": 16,
         "training": False,       # no scale augmentation at eval
         "inside_random": False,  # honor the explicit seq_index / ids below
@@ -147,12 +169,18 @@ dataset = TumDataset(
     split="train",
     TUM_DIR=TUM_DIR,
     sequences=[sequence],
-    len_train=num_frames,
+    len_train=100000,  # virtual length; unused since we call get_data with explicit ids
 )
-# Evenly-spaced, ordered frames across the sequence -> a real trajectory with baseline.
 num_available = len(dataset.data_store[dataset.sequence_list[0]])
-frame_ids = np.linspace(0, num_available - 1, num_frames).round().astype(int)
+if num_frames is None or num_frames >= num_available:
+    frame_ids = np.arange(num_available)                                  # ALL frames, ordered
+else:
+    frame_ids = np.linspace(0, num_available - 1, num_frames).round().astype(int)
+target_h = int(img_size * aspect_ratio) // 16 * 16
+logger.info(f"[{sequence}] loading {len(frame_ids)} / {num_available} frames @ {target_h}x{img_size} (HxW) ...")
+t_load = time.time()
 batch = dataset.get_data(seq_index=0, ids=frame_ids, aspect_ratio=aspect_ratio)
+logger.info(f"loaded in {time.time() - t_load:.1f}s")
 
 images_hwc = np.stack(batch["images"])                      # (S, H, W, 3) uint8, RGB
 gt_depth = np.stack(batch["depths"]).astype(np.float32)     # (S, H, W) metres, 0=invalid
@@ -163,6 +191,7 @@ gt_point_masks = np.stack(batch["point_masks"]).astype(bool)      # (S, H, W)
 # --- 2. Inference on those exact frames --------------------------------------
 model = VGGTOmega().to(device).eval()
 model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+gpu_status("model loaded")
 
 images = (
     torch.from_numpy(images_hwc.astype(np.float32))
@@ -171,8 +200,27 @@ images = (
     .contiguous()
     .to(device)
 )
-with torch.inference_mode():
-    predictions = model(images)
+logger.info(f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ...")
+if device == "cuda":
+    torch.cuda.reset_peak_memory_stats()
+t_infer = time.time()
+try:
+    with torch.inference_mode():
+        predictions = model(images)
+    if device == "cuda":
+        torch.cuda.synchronize()
+except torch.cuda.OutOfMemoryError:
+    gpu_status("OOM")
+    total = torch.cuda.mem_get_info()[1] / 1e9
+    # native-VGA cost ~= 5.9 + 0.087*N GB (README curve scaled to ~1200 tok/frame).
+    fits = int(max(0, (total - 5.9) / 0.087))
+    raise SystemExit(
+        f"\nCUDA OOM on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]}. "
+        f"A single {total:.0f}G GPU fits ~{fits} native-VGA frames in one pass. "
+        f"Set num_frames<=~{fits}, or use a lower resolution (img_size=512 -> ~25% cheaper)."
+    )
+logger.info(f"inference done in {time.time() - t_infer:.1f}s")
+gpu_status("after forward")
 
 extrinsics, intrinsics = encoding_to_camera(
     predictions["pose_enc"], predictions["images"].shape[-2:]
@@ -203,7 +251,7 @@ conf_max = float(pred_conf[finite_conf].max()) if finite_conf.any() else 1.0
 conf_scale = 65535.0 / conf_max if conf_max > 0 else 1.0
 
 frames_meta = []
-for i in range(num_f):
+for i in tqdm(range(num_f), desc="dump depth/conf", unit="frame"):
     name = f"frame_{i:04d}.png"
     save_uint16_image(pred_depth_2d[i], depth_scale, os.path.join(depth_dir, name))
     save_uint16_image(pred_conf[i], conf_scale, os.path.join(conf_dir, name))
@@ -273,7 +321,7 @@ camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
 # 5b. Mono depth: per-frame Abs Rel / delta (per-image median alignment),
 # aggregated to the headline means across frames.
 per_frame_depth = []
-for i in range(num_f):
+for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
     res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
     per_frame_depth.append(res)
 mono_depth_metrics = {
@@ -312,18 +360,20 @@ with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
     json.dump(all_metrics, f, indent=2)
 
 # --- 6. Report ---------------------------------------------------------------
-print(f"[{sequence}] {num_f} frames @ {height}x{width} -> {output_dir}")
-print(f"  point cloud: {points.shape[0]} points -> {ply_path}")
-print("  camera pose (Sim3-aligned):")
-print(f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m")
-print(f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m")
-print(f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg")
-print("  mono depth (median-aligned, mean over frames):")
-print(f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}")
-print(f"    delta1  = {mono_depth_metrics['delta1']:.4f}")
-print("  point cloud (ICP+scale aligned):")
-print(f"    chamfer mean = {pointcloud_metrics['chamfer']['mean']:.4f} m")
-print(f"    accuracy mean = {pointcloud_metrics['accuracy']['mean']:.4f} m")
-print(f"    completeness mean = {pointcloud_metrics['completeness']['mean']:.4f} m")
-print(f"    F-score@{fscore_threshold} = {pointcloud_metrics['fscore']['fscore']:.4f}")
-print(f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}")
+logger.info(
+    f"[{sequence}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
+    f"  point cloud: {points.shape[0]} points -> {ply_path}\n"
+    f"  camera pose (Sim3-aligned):\n"
+    f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m\n"
+    f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m\n"
+    f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg\n"
+    f"  mono depth (median-aligned, mean over frames):\n"
+    f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}\n"
+    f"    delta1  = {mono_depth_metrics['delta1']:.4f}\n"
+    f"  point cloud (ICP+scale aligned):\n"
+    f"    chamfer mean = {pointcloud_metrics['chamfer']['mean']:.4f} m\n"
+    f"    accuracy mean = {pointcloud_metrics['accuracy']['mean']:.4f} m\n"
+    f"    completeness mean = {pointcloud_metrics['completeness']['mean']:.4f} m\n"
+    f"    F-score@{fscore_threshold} = {pointcloud_metrics['fscore']['fscore']:.4f}\n"
+    f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}"
+)
