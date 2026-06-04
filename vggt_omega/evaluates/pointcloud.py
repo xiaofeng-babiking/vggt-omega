@@ -19,7 +19,7 @@ come out of one pass):
   (``NaN`` when no ``threshold`` is set).
 
 VGGT predicts geometry only up to a global scale/pose. Pass ``align="icp"`` to
-register the prediction onto GT (point-to-point ICP, optional Umeyama scale)
+register the prediction onto GT (Open3D point-to-point ICP, optional scale)
 before scoring; the default ``align="none"`` scores the clouds as given.
 
 Everything lives on :class:`PointcloudMetric`; the module exposes nothing else.
@@ -347,27 +347,6 @@ class PointcloudMetric(BaseMetric):
         return cls._unit(eigvecs[:, :, 0])
 
     # ---- registration (internal) ------------------------------------------- #
-    @staticmethod
-    def _umeyama(src: np.ndarray, dst: np.ndarray, with_scale: bool):
-        """Least-squares similarity ``(s, R, t)`` mapping ``src`` onto ``dst``."""
-        mu_s = src.mean(axis=0)
-        mu_d = dst.mean(axis=0)
-        src_c = src - mu_s
-        dst_c = dst - mu_d
-        cov = (dst_c.T @ src_c) / src.shape[0]
-        U, D, Vt = np.linalg.svd(cov)
-        S = np.eye(3)
-        if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-            S[2, 2] = -1.0  # reflection fix -> proper rotation
-        R = U @ S @ Vt
-        if with_scale:
-            var_s = (src_c**2).sum() / src.shape[0]
-            scale = float((D * np.diag(S)).sum() / var_s) if var_s > 0 else 1.0
-        else:
-            scale = 1.0
-        t = mu_d - scale * R @ mu_s
-        return scale, R, t
-
     @classmethod
     def _register_icp(
         cls,
@@ -376,40 +355,87 @@ class PointcloudMetric(BaseMetric):
         *,
         with_scale: bool = True,
         max_iterations: int = 50,
-        tolerance: float = 1e-6,
         sample: int = 50_000,
         seed: int = 0,
+        max_correspondence_distance: float | None = None,
     ):
-        """Point-to-point ICP aligning ``src`` onto ``dst``; returns ``(s, R, t)``.
+        """Register ``src`` onto ``dst`` with Open3D point-to-point ICP.
 
-        Each iteration matches every (subsampled) ``src`` point to its nearest
-        ``dst`` point and refits a similarity via :meth:`_umeyama`. A coarse
-        moment initialization (centroid + RMS spread) gives the narrow-basin
-        point-to-point ICP a chance to lock on under an unknown global scale.
+        ``open3d.pipelines.registration.registration_icp`` with
+        ``TransformationEstimationPointToPoint(with_scaling=...)`` refines a
+        coarse moment initialization (centroid + RMS-spread scale) -- which gives
+        the narrow-basin point-to-point ICP a chance to lock on under an unknown
+        global scale. The resulting similarity ``T = [s R | t]`` is returned
+        decomposed as ``(scale, R, t)`` so that ``p -> scale * R @ p + t`` (the
+        form :meth:`preprocess` applies).
+
+        ``open3d`` is imported lazily, so the rest of the module -- and any
+        metrics-only / ``align="none"`` use -- carries no hard dependency on it.
+
+        Args:
+            src: ``(N, 3)`` cloud to move (the prediction).
+            dst: ``(M, 3)`` reference cloud (the GT).
+            with_scale: solve for a global scale (``True``) or a rigid transform.
+            max_iterations: ICP iteration cap.
+            sample: cap on points used for the fit (both clouds are subsampled
+                to this size); ``0`` uses all points.
+            seed: RNG seed for the subsampling.
+            max_correspondence_distance: ICP correspondence cutoff; defaults to a
+                few RMS-spreads of ``dst`` (effectively all-neighbor ICP).
         """
+        import open3d as o3d
+
         rng = np.random.default_rng(seed)
         src_fit = cls._subsample(src, sample, rng)
         dst_fit = cls._subsample(dst, sample, rng)
-        tree = cKDTree(dst_fit)
 
-        R = np.eye(3)
-        if with_scale:
-            spread_s = np.sqrt(((src_fit - src_fit.mean(0)) ** 2).sum(1).mean())
+        init = cls._moment_init(src_fit, dst_fit, with_scale)
+        if max_correspondence_distance is None:
             spread_d = np.sqrt(((dst_fit - dst_fit.mean(0)) ** 2).sum(1).mean())
+            max_correspondence_distance = float(max(3.0 * spread_d, 1e-9))
+
+        src_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(src_fit))
+        dst_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(dst_fit))
+        result = o3d.pipelines.registration.registration_icp(
+            src_pcd,
+            dst_pcd,
+            max_correspondence_distance,
+            init,
+            o3d.pipelines.registration.TransformationEstimationPointToPoint(
+                with_scaling=with_scale
+            ),
+            o3d.pipelines.registration.ICPConvergenceCriteria(
+                max_iteration=max_iterations
+            ),
+        )
+        return cls._decompose_similarity(np.asarray(result.transformation), with_scale)
+
+    @staticmethod
+    def _moment_init(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> np.ndarray:
+        """Coarse ``4x4`` similarity aligning centroids and (optional) RMS spread."""
+        scale = 1.0
+        if with_scale:
+            spread_s = np.sqrt(((src - src.mean(0)) ** 2).sum(1).mean())
+            spread_d = np.sqrt(((dst - dst.mean(0)) ** 2).sum(1).mean())
             scale = float(spread_d / spread_s) if spread_s > 0 else 1.0
+        init = np.eye(4)
+        init[:3, :3] = scale * np.eye(3)
+        init[:3, 3] = dst.mean(0) - scale * src.mean(0)
+        return init
+
+    @staticmethod
+    def _decompose_similarity(transform: np.ndarray, with_scale: bool):
+        """Decompose a ``4x4`` similarity ``[s R | t]`` into ``(scale, R, t)``."""
+        sr = transform[:3, :3]
+        t = np.asarray(transform[:3, 3], dtype=np.float64).copy()
+        if with_scale:
+            # |det(sR)| = s^3 for a proper rotation R, so s = cbrt(|det|).
+            scale = float(np.cbrt(abs(np.linalg.det(sr))))
+            rot = sr / scale if scale > 0 else sr
         else:
             scale = 1.0
-        t = dst_fit.mean(0) - scale * (R @ src_fit.mean(0))
-        prev = np.inf
-        for _ in range(max_iterations):
-            moved = (scale * (R @ src_fit.T)).T + t
-            dist, idx = tree.query(moved, k=1, workers=-1)
-            scale, R, t = cls._umeyama(src_fit, dst_fit[idx], with_scale)
-            mean_dist = float(dist.mean())
-            if prev - mean_dist <= tolerance * max(prev, 1e-12):
-                break
-            prev = mean_dist
-        return scale, R, t
+            rot = sr
+        return scale, rot, t
 
     @staticmethod
     def _subsample(points: np.ndarray, cap: int, rng) -> np.ndarray:

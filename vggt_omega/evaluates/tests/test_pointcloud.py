@@ -40,6 +40,19 @@ def _rot_z(a: float) -> np.ndarray:
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
+def _asym_cloud(n: int = 2000, seed: int = 0) -> np.ndarray:
+    """An anisotropic (3:2:1) random box -- a well-determined, non-degenerate
+    orientation, so ICP must recover the *true* transform (no sliding DOF as a
+    rotationally-symmetric shape like a helix or sphere would allow)."""
+    rng = np.random.default_rng(seed)
+    return rng.uniform(-1.0, 1.0, size=(n, 3)) * np.array([3.0, 2.0, 1.0])
+
+
+def _rms(a: np.ndarray, b: np.ndarray) -> float:
+    """Root-mean-square point-to-point distance between two index-aligned clouds."""
+    return float(np.sqrt(((a - b) ** 2).sum(axis=1).mean()))
+
+
 # --------------------------------------------------------------------------- #
 # structure
 # --------------------------------------------------------------------------- #
@@ -167,6 +180,30 @@ def test_icp_recovers_similarity_transform():
     assert aligned["accuracy"]["mean"] < 1e-2
     assert aligned["accuracy"]["mean"] < raw["accuracy"]["mean"]
     assert m.icp_scale == pytest.approx(1.0 / 1.5, rel=5e-2)
+
+
+def test_register_icp_recovers_known_similarity():
+    # _register_icp(src, dst) should recover (s, R, t) with dst = s*R*src + t.
+    src = _asym_cloud(2000)
+    s, R, t = 1.5, _rot_z(0.25), np.array([0.5, -0.3, 0.2])
+    dst = (s * (R @ src.T)).T + t
+
+    scale, rot, trans = PointcloudMetric._register_icp(src, dst, with_scale=True)
+    mapped = (scale * (rot @ src.T)).T + trans  # apply the recovered similarity
+    assert scale == pytest.approx(s, rel=1e-3)
+    assert _rms(mapped, dst) < 1e-6 * s  # maps src essentially onto dst
+
+
+def test_register_icp_rigid_without_scale():
+    # with_scale=False -> a rigid transform (scale pinned to 1.0).
+    src = _asym_cloud(2000)
+    R, t = _rot_z(0.3), np.array([1.0, -0.5, 0.2])
+    dst = (R @ src.T).T + t
+
+    scale, rot, trans = PointcloudMetric._register_icp(src, dst, with_scale=False)
+    mapped = (rot @ src.T).T + trans
+    assert scale == 1.0
+    assert _rms(mapped, dst) < 1e-6
 
 
 # --------------------------------------------------------------------------- #
