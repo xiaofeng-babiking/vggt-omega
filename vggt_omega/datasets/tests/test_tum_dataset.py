@@ -280,3 +280,26 @@ def test_composed_sequence_enumeration():
         name = composed.sequence_name(gi)
         assert name in seqs
         assert composed.sequence_num_frames(gi) == len(vendor.data_store[name])
+
+
+@pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
+def test_composed_native_geometry_and_set_img_size():
+    """ComposedDataset reads native frame geometry from the data, and set_img_size
+    drives the get_sample target resolution -- so inference can source img_size /
+    aspect from the dataset instead of hardcoded constants."""
+    from hydra.utils import instantiate
+
+    composed = instantiate(
+        _tum_dataset_cfg(), common_config=_eval_common(), _recursive_=False
+    )
+    h, w = composed.native_image_size(0)
+    assert (h, w) == (480, 640)                       # TUM native VGA (H, W)
+
+    composed.set_img_size(640)                        # native long side
+    assert composed.img_size == 640
+    s = composed.get_sample(0, ids=[0, 1], aspect_ratio=h / w)
+    assert tuple(s["images"].shape[-2:]) == (480, 640)
+
+    composed.set_img_size(320)                        # half-res long side, /16 snapped
+    s2 = composed.get_sample(0, ids=[0, 1], aspect_ratio=h / w)
+    assert tuple(s2["images"].shape[-2:]) == (240, 320)

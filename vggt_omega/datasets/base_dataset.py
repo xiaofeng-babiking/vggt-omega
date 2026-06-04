@@ -101,6 +101,15 @@ class BaseDataset(Dataset):
             "ComposedDataset sequence enumeration."
         )
 
+    def native_image_size(self, local_idx=0):
+        """Native ``(H, W)`` of the source frames for the sequence at ``local_idx``.
+        Concrete vendors implement this so :class:`ComposedDataset` (and inference)
+        can read the evaluation resolution from the data instead of hardcoding it."""
+        raise NotImplementedError(
+            "Concrete datasets must implement native_image_size() to support "
+            "native-resolution evaluation."
+        )
+
     def get_target_shape(self, aspect_ratio):
         """
         Calculate the target shape based on the given aspect ratio.

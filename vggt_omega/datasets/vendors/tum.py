@@ -174,11 +174,23 @@ class TumDataset(BaseDataset):
         self.sequence_list_len = len(self.sequence_list)
         if self.sequence_list_len == 0:
             raise ValueError(f"No usable TUM sequences under {TUM_DIR}")
+        self._native_size_cache = {}
 
     def sequence_num_frames(self, local_idx: int) -> int:
         """Number of associated frames in the sequence at ``local_idx`` of this
         vendor's ``sequence_list`` (used by ComposedDataset enumeration)."""
         return len(self.data_store[self.sequence_list[local_idx]])
+
+    def native_image_size(self, local_idx: int = 0):
+        """Native ``(H, W)`` of the source RGB frames for the sequence at
+        ``local_idx``, read lazily from the first frame's header and cached."""
+        name = self.sequence_list[local_idx]
+        if name not in self._native_size_cache:
+            rgb_path = self.data_store[name][0][0]
+            with Image.open(rgb_path) as im:
+                w, h = im.size  # PIL reports (W, H) without decoding pixels
+            self._native_size_cache[name] = (h, w)
+        return self._native_size_cache[name]
 
     def get_data(
         self,

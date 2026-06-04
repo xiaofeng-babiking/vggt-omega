@@ -248,6 +248,23 @@ class ComposedDataset(Dataset, ABC):
         )
         return self._tensorize(batch)
 
+    def native_image_size(self, seq_index=0):
+        """Native ``(H, W)`` of the source frames for a global sequence index --
+        lets the eval/inference resolution be read from the data, not hardcoded."""
+        vendor, local_idx, _ = self.sequence_index[seq_index]
+        return vendor.native_image_size(local_idx)
+
+    def set_img_size(self, img_size):
+        """Override the target long-side resolution on every vendor (e.g. to
+        evaluate at the data's native resolution). Affects get_data / get_sample."""
+        for vendor in self.base_dataset.datasets:
+            vendor.img_size = int(img_size)
+
+    @property
+    def img_size(self):
+        """Current target long-side resolution (uniform across vendors)."""
+        return self.base_dataset.datasets[0].img_size
+
 
 class TupleConcatDataset(ConcatDataset):
     """

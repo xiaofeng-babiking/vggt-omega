@@ -71,14 +71,8 @@ gflags.DEFINE_integer(
     "Frames per sequence. 0 (default) = ALL frames; otherwise this many, evenly spaced and ordered.")
 gflags.DEFINE_float(
     "image_scale", 1.0,
-    "Resolution scale factor. 1.0 (default) = native long side (--img_size); the effective long "
-    "side is round(img_size * image_scale) snapped to a multiple of 16.")
-gflags.DEFINE_integer(
-    "img_size", 640,
-    "Base long-side resolution (pixels) before --image_scale. TUM native VGA = 640.")
-gflags.DEFINE_float(
-    "aspect_ratio", 0.75,
-    "Image aspect ratio H/W used to derive the target shape (TUM 640x480 -> 0.75).")
+    "Resolution scale factor. 1.0 (default) = the dataset's native long side; the effective "
+    "long side is round(native_long * image_scale) snapped to a multiple of 16.")
 gflags.DEFINE_string(
     "output_root", "outputs",
     "Output root directory; a per-sequence subdirectory is created under it.")
@@ -92,10 +86,9 @@ gflags.DEFINE_integer(
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def effective_img_size() -> int:
-    """Long-side resolution after applying --image_scale, snapped to a /16 multiple."""
-    raw = FLAGS.img_size * FLAGS.image_scale
-    return max(16, int(round(raw / 16)) * 16)
+def effective_long_side(native_long: int) -> int:
+    """Native long side scaled by --image_scale, snapped to a /16 multiple (ViT-friendly)."""
+    return max(16, int(round(native_long * FLAGS.image_scale / 16)) * 16)
 
 
 def gpu_status(tag: str) -> None:
@@ -205,7 +198,6 @@ def build_dataset() -> ComposedDataset:
         OmegaConf.load(os.path.join(DATASET_CONFIG_DIR, "default.yaml")),
     )
     common = cfg.data.train.common_config
-    common.img_size = effective_img_size()  # native eval resolution (was 512 in training)
     common.training = False                  # no scale/colour augmentation
     common.inside_random = False             # honor explicit seq_index / ids
     common.rescale_aug = False               # deterministic resize
@@ -218,7 +210,12 @@ def build_dataset() -> ComposedDataset:
     vendor_cfg.TUM_DIR = FLAGS.tum_dir
     vendor_cfg.sequences = list(FLAGS.sequences) if FLAGS.sequences else ["*"]
 
-    return instantiate(dataset_cfg, common_config=common, _recursive_=False)
+    dataset = instantiate(dataset_cfg, common_config=common, _recursive_=False)
+    # Evaluate at the data's NATIVE long side (x --image_scale), read from the
+    # dataset itself rather than hardcoded.
+    native_h, native_w = dataset.native_image_size()
+    dataset.set_img_size(effective_long_side(max(native_h, native_w)))
+    return dataset
 
 
 def resolve_frame_ids(dataset: ComposedDataset, seq_index: int) -> np.ndarray:
@@ -234,7 +231,9 @@ def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
     """Training-identical tensorized sample for ``frame_ids`` of one sequence
     (images ``(S,3,H,W)`` in ``[0,1]`` + the full GT modality set)."""
     t_load = time.time()
-    sample = dataset.get_sample(seq_index, ids=frame_ids, aspect_ratio=FLAGS.aspect_ratio)
+    native_h, native_w = dataset.native_image_size(seq_index)
+    aspect_ratio = min(native_h, native_w) / max(native_h, native_w)
+    sample = dataset.get_sample(seq_index, ids=frame_ids, aspect_ratio=aspect_ratio)
     logger.info(f"loaded {len(frame_ids)} frames in {time.time() - t_load:.1f}s")
     return sample
 
@@ -441,8 +440,7 @@ def main():
 
     num_seqs = dataset.num_sequences()
     logger.info(
-        f"{num_seqs} sequence(s) @ {effective_img_size()} long side "
-        f"(img_size {FLAGS.img_size} x scale {FLAGS.image_scale}), "
+        f"{num_seqs} sequence(s) @ {dataset.img_size} long side (scale {FLAGS.image_scale}), "
         f"num_frames={'all' if FLAGS.num_frames <= 0 else FLAGS.num_frames}"
     )
 
