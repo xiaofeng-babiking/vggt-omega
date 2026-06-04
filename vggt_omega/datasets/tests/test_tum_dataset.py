@@ -71,6 +71,32 @@ def _tum_dataset_cfg(seq="rgbd_dataset_freiburg3_sitting_halfsphere", n=20):
     }
 
 
+# --- TUM-specific helper unit tests (no data required) ---
+
+
+def test_tum_pose_to_w2c_inverts_c2w():
+    w2c = TumDataset.tum_pose_to_w2c(np.zeros(3), (0.0, 0.0, 0.0, 1.0))
+    assert w2c.shape == (3, 4)
+    np.testing.assert_allclose(w2c, np.hstack([np.eye(3), np.zeros((3, 1))]), atol=1e-6)
+
+
+def test_tum_pose_to_w2c_translation():
+    w2c = TumDataset.tum_pose_to_w2c(np.array([1.0, 2.0, 3.0]), (0.0, 0.0, 0.0, 1.0))
+    np.testing.assert_allclose(w2c[:, 3], [-1.0, -2.0, -3.0], atol=1e-6)
+
+
+def test_tum_intrinsics_fr3_and_override_and_unknown():
+    K = TumDataset.tum_intrinsics("rgbd_dataset_freiburg3_sitting_halfsphere")
+    assert K.shape == (3, 3) and K[0, 0] > 0 and K[2, 2] == 1.0
+    K2 = TumDataset.tum_intrinsics("anything", override=[100.0, 100.0, 50.0, 50.0])
+    assert K2[0, 0] == 100.0 and K2[0, 2] == 50.0
+    with pytest.raises(ValueError, match="intrinsics"):
+        TumDataset.tum_intrinsics("no_camera_here")
+
+
+# --- TUM integration tests (require the TUM dataset on disk) ---
+
+
 @pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
 def test_tum_sample_schema_and_conventions():
     ds = TumDataset(

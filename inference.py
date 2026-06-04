@@ -4,16 +4,19 @@ Drives inference from :class:`~vggt_omega.datasets.vendors.tum.TumDataset`, whic
 yields RGB frames together with ground-truth depth / camera poses / intrinsics,
 all processed to the same resolution the model sees. We:
 
-  1. predict **camera poses**, **monocular depth**, and a fused **point cloud**;
+  1. predict **camera poses** and **monocular depth** (+ a fused point cloud);
   2. dump them (depth/conf PNGs, ``cameras.json``, ``pointcloud.ply``);
-  3. evaluate every metric family in :mod:`vggt_omega.evaluates` against the TUM
-     ground truth -- camera pose (ATE / RPE), mono depth (Abs Rel / delta), and
-     point cloud (accuracy / completeness / chamfer / normal-consistency / F-score).
+  3. evaluate against the TUM ground truth -- camera pose (ATE / RPE) and mono
+     depth (Abs Rel / delta).
+
+TUM has no independent point-cloud ground truth: its "world points" are only the
+GT depth re-projected through the GT poses, so the fused cloud is exported for
+visualization but NOT scored (scoring it against re-projected depth is circular).
 
 Conventions (see ``vggt_omega/datasets``): extrinsics are world-to-camera OpenCV
 ``[R|t]``; depth is metres with ``0`` = invalid. VGGT predicts geometry only up to
-a global scale/pose, so depth uses a per-image median scale, poses a Umeyama
-``Sim3`` alignment, and the cloud an ICP+scale registration before scoring.
+a global scale, so depth uses a per-image median scale and poses a Umeyama
+``Sim3`` alignment before scoring.
 """
 
 import json
@@ -30,7 +33,7 @@ from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
 from vggt_omega.datasets.vendors.tum import TumDataset
-from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric, PointcloudMetric
+from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
 logger = get_logger("vggt_omega.inference")
 
@@ -44,16 +47,13 @@ img_size = 640
 aspect_ratio = 0.75
 # None -> use every associated frame; else cap to this many (evenly spaced, ordered).
 # 1069 frames @ native VGA OOMs an 80G GPU (~99G); ~700 is the largest native-VGA fit.
-num_frames = 700
+num_frames = 1000
 
 output_dir = os.path.join("outputs", sequence)
 # Drop the lowest `conf_percentile`% of points (by confidence) from the fused cloud.
 conf_percentile = 20.0
-# Cap cloud size for export and for the (KD-tree / ICP) point-cloud metric.
-max_points = 3_000_000
-metric_max_points = 200_000
-# Inlier distance (metres, in GT scale after ICP) for the point-cloud F-score.
-fscore_threshold = 0.05
+# Cap exported point-cloud size (the fused cloud is a visualization, not scored).
+max_points = 5_000_000
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -192,14 +192,10 @@ def load_frames(dataset, frame_ids, aspect_ratio):
     images_hwc = np.stack(batch["images"])                      # (S, H, W, 3) uint8, RGB
     gt_depth = np.stack(batch["depths"]).astype(np.float32)     # (S, H, W) metres, 0=invalid
     gt_extrinsics = np.stack(batch["extrinsics"]).astype(np.float32)  # (S, 3, 4) world->cam
-    gt_world_points = np.stack(batch["world_points"]).astype(np.float32)  # (S, H, W, 3)
-    gt_point_masks = np.stack(batch["point_masks"]).astype(bool)      # (S, H, W)
     return {
         "images_hwc": images_hwc,
         "gt_depth": gt_depth,
         "gt_extrinsics": gt_extrinsics,
-        "gt_world_points": gt_world_points,
-        "gt_point_masks": gt_point_masks,
     }
 
 
@@ -270,8 +266,6 @@ def dump_and_eval(frame_ids, loaded, pred):
     pred_intrinsics = pred["pred_intrinsics"]
     gt_depth = loaded["gt_depth"]
     gt_extrinsics = loaded["gt_extrinsics"]
-    gt_world_points = loaded["gt_world_points"]
-    gt_point_masks = loaded["gt_point_masks"]
 
     num_f, height, width = pred_depth.shape[:3]
     pred_depth_2d = pred_depth[..., 0]                                  # (S, H, W)
@@ -373,28 +367,12 @@ def dump_and_eval(frame_ids, loaded, pred):
         "num_frames": int(num_f),
     }
 
-    # 5c. Point cloud: GT cloud from TUM world points; predicted cloud from predicted
-    # depth+poses. ICP+scale registers the prediction before scoring.
-    gt_cloud = gt_world_points[gt_point_masks].reshape(-1, 3)
-    pred_cloud = pred_world_points.reshape(-1, 3)
-    pred_cloud = pred_cloud[np.isfinite(pred_cloud).all(axis=1) & (depth_flat > 0)]
-    pointcloud_metrics = PointcloudMetric(
-        gt_cloud,
-        pred_cloud,
-        align="icp",
-        align_scale=True,
-        threshold=fscore_threshold,
-        max_points=metric_max_points,
-        seed=0,
-    ).run(vis_path=os.path.join(metrics_dir, "pointcloud"))
-
     all_metrics = {
         "scene": sequence,
         "num_frames": int(num_f),
         "resolution": [int(height), int(width)],
         "camera_pose": camera_pose_metrics,
         "mono_depth": mono_depth_metrics,
-        "pointcloud": pointcloud_metrics,
     }
     with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
         json.dump(all_metrics, f, indent=2)
@@ -410,11 +388,6 @@ def dump_and_eval(frame_ids, loaded, pred):
         f"  mono depth (median-aligned, mean over frames):\n"
         f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}\n"
         f"    delta1  = {mono_depth_metrics['delta1']:.4f}\n"
-        f"  point cloud (ICP+scale aligned):\n"
-        f"    chamfer mean = {pointcloud_metrics['chamfer']['mean']:.4f} m\n"
-        f"    accuracy mean = {pointcloud_metrics['accuracy']['mean']:.4f} m\n"
-        f"    completeness mean = {pointcloud_metrics['completeness']['mean']:.4f} m\n"
-        f"    F-score@{fscore_threshold} = {pointcloud_metrics['fscore']['fscore']:.4f}\n"
         f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}"
     )
 
