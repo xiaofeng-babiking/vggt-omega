@@ -92,6 +92,15 @@ class BaseDataset(Dataset):
             "This is an abstract method and should be implemented in the subclass, i.e., each dataset should implement its own get_data method."
         )
 
+    def sequence_num_frames(self, local_idx):
+        """Number of frames in the sequence at ``local_idx`` of this dataset's
+        ``sequence_list``. Concrete vendors must implement this for
+        :class:`ComposedDataset` sequence enumeration (the inference path)."""
+        raise NotImplementedError(
+            "Concrete datasets must implement sequence_num_frames() to support "
+            "ComposedDataset sequence enumeration."
+        )
+
     def get_target_shape(self, aspect_ratio):
         """
         Calculate the target shape based on the given aspect ratio.

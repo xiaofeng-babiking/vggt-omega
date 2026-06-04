@@ -129,12 +129,8 @@ token count**. At patch size 16, an `H×W` input produces `P = (H÷16)·(W÷16)`
 tokens per frame, so for `N` frames:
 
 ```
-single GPU         peak_GB    ≈  5.9  +  7.3e-5 · N · P
-G GPUs (Ulysses)   per_GPU_GB ≈  5.9  +  7.3e-5 · N · P / G
+peak_GB  ≈  5.9  +  7.3e-5 · N · P
 ```
-
-Under sequence parallelism (see below) the frames are sharded across the `G` GPUs
-while the weights are replicated, so only the activation term is divided by `G`.
 
 **Where the constants come from.** Both are a least-squares fit to the table above,
 which is linear to within ~1%:
@@ -161,58 +157,9 @@ count and resolution as inputs.
 
 Worked examples: 624x416 (`P = 1014`) at 500 frames → `≈ 42.9 GB` (43.15 measured);
 native 640x480 (`P = 1200`) → `≈ 99 GB` at 1069 frames (OOM on an 80 GB GPU, as
-observed), but only `≈ 15 GB/GPU` across 8 GPUs at 800 frames (measured ~14). The
-constants are calibrated for this 1B model with fp32 weights on an A100-class GPU
+observed). The constants are calibrated for this 1B model with fp32 weights on an A100-class GPU
 and shift with dtype, attention backend, or the alignment head enabled; the model
 covers memory only, not the `O(N²)` runtime.
-
-## Multi-GPU Inference
-
-A single scene is processed as one clip: the aggregator's global attention
-couples all frames, so they cannot be split into independent batches, and on one
-GPU the activation memory grows with the frame count (see the table above). To
-run sequences longer than fit on a single GPU, the bundled `inference.py` driver
-supports **Ulysses sequence parallelism** — the frames of one scene are sharded
-across GPUs and only the global cross-frame attention exchanges tokens between
-them (via an all-to-all). The output is numerically identical to single-GPU
-inference (the all-to-all is exact; end-to-end metrics match to ~1e-6).
-
-Single GPU (unchanged):
-
-```bash
-python inference.py
-```
-
-Multiple GPUs on one node, one process per GPU, via `torchrun`:
-
-```bash
-torchrun --nproc_per_node=8 inference.py
-```
-
-`inference.py` auto-detects the `torchrun` environment and shards the sequence;
-run without `torchrun` and it behaves exactly as before on one GPU. Set the
-checkpoint/data paths and `num_frames` at the top of the script.
-
-**Guidelines**
-
-- **`num_frames` must be divisible by the number of GPUs.** Frames are split into
-  equal contiguous blocks; a non-divisible count aborts with a clear error.
-- **The GPU count must divide 16** (the number of attention heads the all-to-all
-  shards across ranks) — i.e. 2, 4, 8, or 16 GPUs.
-- **Prefer a single node with NVLink.** The all-to-all fires once per global
-  attention block, so a fast intra-node interconnect keeps the overhead small.
-- **Per-GPU memory drops ~`1/G`** (the frames are sharded; the weights are
-  replicated), so the frame ceiling rises ~`N×`. Use the `per_GPU_GB` formula under
-  *Estimating peak memory* above to size a run.
-- **Compute, not memory, is the eventual limit.** Global attention is `O(N²)` in
-  the frame count, so wall-clock grows quadratically as sequences get very long.
-- **Text alignment is not sequence-parallel-aware.** Keep `enable_alignment=False`
-  (the default) under `torchrun`; enabling it raises an error rather than
-  returning embeddings computed over only each shard's frames.
-
-To drive sequence-parallel inference from your own script, use the building
-blocks in `vggt_omega.distributed`: `init_sequence_parallel()`,
-`install_sequence_parallel(model, ctx)`, and `shard_frames(...)`.
 
 ## License
 

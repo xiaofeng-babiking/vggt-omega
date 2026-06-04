@@ -175,6 +175,11 @@ class TumDataset(BaseDataset):
         if self.sequence_list_len == 0:
             raise ValueError(f"No usable TUM sequences under {TUM_DIR}")
 
+    def sequence_num_frames(self, local_idx: int) -> int:
+        """Number of associated frames in the sequence at ``local_idx`` of this
+        vendor's ``sequence_list`` (used by ComposedDataset enumeration)."""
+        return len(self.data_store[self.sequence_list[local_idx]])
+
     def get_data(
         self,
         seq_index: int = None,

@@ -1,8 +1,8 @@
-"""Run VGGT-Omega on a TUM RGB-D sequence and evaluate all metrics.
+"""Run VGGT-Omega on TUM RGB-D sequences and evaluate camera-pose + mono-depth.
 
-Drives inference from :class:`~vggt_omega.datasets.vendors.tum.TumDataset`, which
-yields RGB frames together with ground-truth depth / camera poses / intrinsics,
-all processed to the same resolution the model sees. We:
+Drives inference from the *training* :class:`~vggt_omega.datasets.composed_dataset.ComposedDataset`
+(instantiated from the dataset Hydra config, eval knobs overridden), so each frame
+is tensorized through the exact same contract the model is trained on. Per sequence we:
 
   1. predict **camera poses** and **monocular depth** (+ a fused point cloud);
   2. dump them (depth/conf PNGs, ``cameras.json``, ``pointcloud.ply``);
@@ -17,45 +17,85 @@ Conventions (see ``vggt_omega/datasets``): extrinsics are world-to-camera OpenCV
 ``[R|t]``; depth is metres with ``0`` = invalid. VGGT predicts geometry only up to
 a global scale, so depth uses a per-image median scale and poses a Umeyama
 ``Sim3`` alignment before scoring.
+
+Usage (all arguments are gflags; defaults run ALL sequences, ALL frames, native
+resolution), single GPU::
+
+    python inference.py
+    python inference.py --image_scale=0.5 --sequences=rgbd_dataset_freiburg3_sitting_halfsphere
+    python inference.py --num_frames=200 --tum_dir=/path/to/tum
+
+``--help`` lists every flag.
 """
 
 import json
 import os
+import sys
 import time
 
 import cv2
+import gflags
 import numpy as np
 import torch
+from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
+from vggt_omega import datasets as vggt_datasets
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
-from vggt_omega.datasets.vendors.tum import TumDataset
+from vggt_omega.datasets.composed_dataset import ComposedDataset
 from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
 logger = get_logger("vggt_omega.inference")
 
-# --- configuration -----------------------------------------------------------
-checkpoint_path = "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt"
-TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
-sequence = "rgbd_dataset_freiburg3_sitting_halfsphere"
-# Use TUM's RAW VGA resolution: img_size is the long side (W=640); aspect (H/W)=0.75
-# -> get_target_shape gives [480, 640] (HxW), i.e. native 640x480 (both /16-divisible).
-img_size = 640
-aspect_ratio = 0.75
-# None -> use every associated frame; else cap to this many (evenly spaced, ordered).
-# 1069 frames @ native VGA OOMs an 80G GPU (~99G); ~700 is the largest native-VGA fit.
-num_frames = 1000
+# Training dataset Hydra config (anchors common_conf so eval geometry/tensorization
+# stay identical to training; only the eval knobs below are overridden).
+DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "config")
 
-output_dir = os.path.join("outputs", sequence)
-# Drop the lowest `conf_percentile`% of points (by confidence) from the fused cloud.
-conf_percentile = 20.0
-# Cap exported point-cloud size (the fused cloud is a visualization, not scored).
-max_points = 5_000_000
+# --- command-line flags ------------------------------------------------------
+FLAGS = gflags.FLAGS
+gflags.DEFINE_string(
+    "checkpoint", "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt",
+    "Path to the VGGT-Omega checkpoint (.pt).")
+gflags.DEFINE_string(
+    "tum_dir", "/jfs/guibiao/streamVGGT/data/eval/tum",
+    "Root directory holding the TUM RGB-D sequence folders.")
+gflags.DEFINE_list(
+    "sequences", [],
+    "TUM sequences to run, as names or glob patterns (e.g. 'rgbd_dataset_freiburg3_*'). "
+    "Empty (default) = ALL sequences under --tum_dir.")
+gflags.DEFINE_integer(
+    "num_frames", 720,
+    "Frames per sequence. 0 (default) = ALL frames; otherwise this many, evenly spaced and ordered.")
+gflags.DEFINE_float(
+    "image_scale", 1.0,
+    "Resolution scale factor. 1.0 (default) = native long side (--img_size); the effective long "
+    "side is round(img_size * image_scale) snapped to a multiple of 16.")
+gflags.DEFINE_integer(
+    "img_size", 640,
+    "Base long-side resolution (pixels) before --image_scale. TUM native VGA = 640.")
+gflags.DEFINE_float(
+    "aspect_ratio", 0.75,
+    "Image aspect ratio H/W used to derive the target shape (TUM 640x480 -> 0.75).")
+gflags.DEFINE_string(
+    "output_root", "outputs",
+    "Output root directory; a per-sequence subdirectory is created under it.")
+gflags.DEFINE_float(
+    "conf_percentile", 20.0,
+    "Drop the lowest this-percent of points (by confidence) from the fused cloud.")
+gflags.DEFINE_integer(
+    "max_points", 5_000_000,
+    "Cap on exported point-cloud size (the fused cloud is a visualization, not scored).")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def effective_img_size() -> int:
+    """Long-side resolution after applying --image_scale, snapped to a /16 multiple."""
+    raw = FLAGS.img_size * FLAGS.image_scale
+    return max(16, int(round(raw / 16)) * 16)
 
 
 def gpu_status(tag: str) -> None:
@@ -149,73 +189,81 @@ def write_ply(path: str, points: np.ndarray, colors: np.ndarray) -> None:
         f.write(vertex.tobytes())
 
 
-# --- 1. Load a TUM sequence (RGB + GT depth/poses/intrinsics) -----------------
-def build_dataset_and_frame_ids():
-    """Construct the TUM dataset and resolve the ordered frame ids to load."""
-    common_conf = OmegaConf.create(
-        {
-            "img_size": img_size,
-            "patch_size": 16,
-            "training": False,       # no scale augmentation at eval
-            "inside_random": False,  # honor the explicit seq_index / ids below
-            "allow_duplicate_img": False,
-            "get_nearby": False,     # use our ordered ids verbatim (not a random window)
-            "rescale": True,
-            "rescale_aug": False,
-            "landscape_check": False,
-            "augs": {"scales": None},
-        }
+# --- 1. Load TUM sequences (RGB + GT depth/poses/intrinsics) ------------------
+def build_dataset() -> ComposedDataset:
+    """Instantiate the *training* ComposedDataset from the dataset Hydra config,
+    overriding only the eval knobs.
+
+    Everything else (patch_size, rescale, landscape_check, load_track, the TUM
+    vendor settings) is inherited from the training config, so inference cannot
+    silently drift from training. The overrides reproduce deterministic eval
+    geometry: native resolution, no scale/colour augmentation, explicit ordered
+    ids honored verbatim (no random remap / nearby-window sampling).
+    """
+    cfg = OmegaConf.merge(
+        OmegaConf.load(os.path.join(DATASET_CONFIG_DIR, "default_dataset.yaml")),
+        OmegaConf.load(os.path.join(DATASET_CONFIG_DIR, "default.yaml")),
     )
-    dataset = TumDataset(
-        common_conf=common_conf,
-        split="train",
-        TUM_DIR=TUM_DIR,
-        sequences=[sequence],
-        len_train=100000,  # virtual length; unused since we call get_data with explicit ids
-    )
-    num_available = len(dataset.data_store[dataset.sequence_list[0]])
-    if num_frames is None or num_frames >= num_available:
-        frame_ids = np.arange(num_available)                                  # ALL frames, ordered
-    else:
-        frame_ids = np.linspace(0, num_available - 1, num_frames).round().astype(int)
-    target_h = int(img_size * aspect_ratio) // 16 * 16
-    logger.info(f"[{sequence}] loading {len(frame_ids)} / {num_available} frames @ {target_h}x{img_size} (HxW) ...")
-    return dataset, frame_ids
+    common = cfg.data.train.common_config
+    common.img_size = effective_img_size()  # native eval resolution (was 512 in training)
+    common.training = False                  # no scale/colour augmentation
+    common.inside_random = False             # honor explicit seq_index / ids
+    common.rescale_aug = False               # deterministic resize
+    common.get_nearby = False                # use our ordered ids verbatim
+    common.allow_duplicate_img = False
+    common.augs.scales = None
+
+    dataset_cfg = cfg.data.train.dataset
+    vendor_cfg = dataset_cfg.dataset_configs[0]
+    vendor_cfg.TUM_DIR = FLAGS.tum_dir
+    vendor_cfg.sequences = list(FLAGS.sequences) if FLAGS.sequences else ["*"]
+
+    return instantiate(dataset_cfg, common_config=common, _recursive_=False)
 
 
-def load_frames(dataset, frame_ids, aspect_ratio):
-    """Load RGB + GT depth/poses/world-points/masks for ``frame_ids``."""
+def resolve_frame_ids(dataset: ComposedDataset, seq_index: int) -> np.ndarray:
+    """Ordered frame ids for one sequence: all frames (--num_frames<=0) or evenly spaced."""
+    num_available = dataset.sequence_num_frames(seq_index)
+    nf = FLAGS.num_frames
+    if nf <= 0 or nf >= num_available:
+        return np.arange(num_available)                                  # ALL frames, ordered
+    return np.linspace(0, num_available - 1, nf).round().astype(int)
+
+
+def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
+    """Training-identical tensorized sample for ``frame_ids`` of one sequence
+    (images ``(S,3,H,W)`` in ``[0,1]`` + the full GT modality set)."""
     t_load = time.time()
-    batch = dataset.get_data(seq_index=0, ids=frame_ids, aspect_ratio=aspect_ratio)
-    logger.info(f"loaded in {time.time() - t_load:.1f}s")
+    sample = dataset.get_sample(seq_index, ids=frame_ids, aspect_ratio=FLAGS.aspect_ratio)
+    logger.info(f"loaded {len(frame_ids)} frames in {time.time() - t_load:.1f}s")
+    return sample
 
-    images_hwc = np.stack(batch["images"])                      # (S, H, W, 3) uint8, RGB
-    gt_depth = np.stack(batch["depths"]).astype(np.float32)     # (S, H, W) metres, 0=invalid
-    gt_extrinsics = np.stack(batch["extrinsics"]).astype(np.float32)  # (S, 3, 4) world->cam
+
+def gt_from_sample(sample: dict) -> dict:
+    """Pull the ground-truth arrays inference scores against (eval semantics
+    unchanged: GT depth + extrinsics; predicted intrinsics drive unprojection)."""
     return {
-        "images_hwc": images_hwc,
-        "gt_depth": gt_depth,
-        "gt_extrinsics": gt_extrinsics,
+        "gt_depth": sample["depths"].numpy().astype(np.float32),            # (S, H, W) m, 0=invalid
+        "gt_extrinsics": sample["extrinsics"].numpy().astype(np.float32),   # (S, 3, 4) world->cam
     }
 
 
-# --- 2. Inference on those exact frames --------------------------------------
-def run_model(images_hwc, ctx=None):
-    """Build VGGT-Omega, run the forward pass, and extract prediction arrays."""
+# --- 2. Model + inference ----------------------------------------------------
+def build_model() -> VGGTOmega:
+    """Build VGGT-Omega once and load the checkpoint."""
     model = VGGTOmega().to(device).eval()
-    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
-    if ctx is not None:
-        from vggt_omega.distributed import install_sequence_parallel
-        install_sequence_parallel(model, ctx)
+    model.load_state_dict(torch.load(FLAGS.checkpoint, map_location="cpu"))
     gpu_status("model loaded")
+    return model
 
-    images = (
-        torch.from_numpy(images_hwc.astype(np.float32))
-        .permute(0, 3, 1, 2)
-        .div(255.0)
-        .contiguous()
-        .to(device)
-    )
+
+def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
+    """Run the forward pass on one sequence's frames and extract prediction arrays.
+
+    ``images`` is the training-identical ``(S,3,H,W)`` tensor in ``[0,1]`` produced
+    by the dataset loader -- no hand-rolled normalization here.
+    """
+    images = images.contiguous().to(device)
     logger.info(f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ...")
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -233,7 +281,7 @@ def run_model(images_hwc, ctx=None):
         raise SystemExit(
             f"\nCUDA OOM on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]}. "
             f"A single {total:.0f}G GPU fits ~{fits} native-VGA frames in one pass. "
-            f"Set num_frames<=~{fits}, or use a lower resolution (img_size=512 -> ~25% cheaper)."
+            f"Lower --num_frames (<=~{fits}) or drop --image_scale."
         )
     logger.info(f"inference done in {time.time() - t_infer:.1f}s")
     gpu_status("after forward")
@@ -243,22 +291,17 @@ def run_model(images_hwc, ctx=None):
     )
 
     # Pull to CPU/numpy (float() guards against bf16, which numpy can't hold).
-    pred_depth = predictions["depth"].float().cpu().numpy()[0]          # (S, H, W, 1)
-    pred_conf = predictions["depth_conf"].float().cpu().numpy()[0]      # (S, H, W)
-    images_np = predictions["images"].float().cpu().numpy()[0]          # (S, 3, H, W) [0,1]
-    pred_extrinsics = extrinsics.float().cpu().numpy()[0]               # (S, 3, 4) world->cam
-    pred_intrinsics = intrinsics.float().cpu().numpy()[0]               # (S, 3, 3) pixels
     return {
-        "pred_depth": pred_depth,
-        "pred_conf": pred_conf,
-        "images_pred": images_np,
-        "pred_extrinsics": pred_extrinsics,
-        "pred_intrinsics": pred_intrinsics,
+        "pred_depth": predictions["depth"].float().cpu().numpy()[0],        # (S, H, W, 1)
+        "pred_conf": predictions["depth_conf"].float().cpu().numpy()[0],    # (S, H, W)
+        "images_pred": predictions["images"].float().cpu().numpy()[0],      # (S, 3, H, W) [0,1]
+        "pred_extrinsics": extrinsics.float().cpu().numpy()[0],             # (S, 3, 4) world->cam
+        "pred_intrinsics": intrinsics.float().cpu().numpy()[0],             # (S, 3, 3) pixels
     }
 
 
-def dump_and_eval(frame_ids, loaded, pred):
-    """Dump predictions, fuse the PLY, evaluate all metrics, and report."""
+def dump_and_eval(seq_name: str, output_dir: str, frame_ids, loaded: dict, pred: dict) -> None:
+    """Dump predictions, fuse the PLY, evaluate metrics, and report for one sequence."""
     pred_depth = pred["pred_depth"]
     pred_conf = pred["pred_conf"]
     images_np = pred["images_pred"]
@@ -301,7 +344,7 @@ def dump_and_eval(frame_ids, loaded, pred):
         )
 
     camera_meta = {
-        "scene": sequence,
+        "scene": seq_name,
         "image_width": int(width),
         "image_height": int(height),
         "num_frames": int(num_f),
@@ -327,14 +370,14 @@ def dump_and_eval(frame_ids, loaded, pred):
     depth_flat = pred_depth_2d.reshape(-1)
 
     mask = np.isfinite(points).all(axis=1) & np.isfinite(conf_flat) & (depth_flat > 0)
-    if conf_percentile > 0 and mask.any():
-        threshold = np.percentile(conf_flat[mask], conf_percentile)
+    if FLAGS.conf_percentile > 0 and mask.any():
+        threshold = np.percentile(conf_flat[mask], FLAGS.conf_percentile)
         mask &= conf_flat >= threshold
     points, colors = points[mask], colors[mask]
 
-    if max_points and points.shape[0] > max_points:
+    if FLAGS.max_points and points.shape[0] > FLAGS.max_points:
         rng = np.random.default_rng(0)
-        keep = rng.choice(points.shape[0], size=max_points, replace=False)
+        keep = rng.choice(points.shape[0], size=FLAGS.max_points, replace=False)
         points, colors = points[keep], colors[keep]
 
     ply_path = os.path.join(output_dir, "pointcloud.ply")
@@ -368,7 +411,7 @@ def dump_and_eval(frame_ids, loaded, pred):
     }
 
     all_metrics = {
-        "scene": sequence,
+        "scene": seq_name,
         "num_frames": int(num_f),
         "resolution": [int(height), int(width)],
         "camera_pose": camera_pose_metrics,
@@ -379,7 +422,7 @@ def dump_and_eval(frame_ids, loaded, pred):
 
     # --- 6. Report ---------------------------------------------------------------
     logger.info(
-        f"[{sequence}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
+        f"[{seq_name}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
         f"  point cloud: {points.shape[0]} points -> {ply_path}\n"
         f"  camera pose (Sim3-aligned):\n"
         f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m\n"
@@ -392,52 +435,32 @@ def dump_and_eval(frame_ids, loaded, pred):
     )
 
 
-# --- distributed (Ulysses sequence-parallel) helpers -------------------------
-def shard_local_ids(frame_ids, ctx):
-    """This rank's contiguous frame block (all frames when single-process)."""
-    if ctx is None:
-        return frame_ids
-    from vggt_omega.distributed import shard_frames
-
-    return shard_frames(frame_ids, ctx.sp_size, ctx.sp_rank)
-
-
-def gather_predictions(pred, ctx):
-    """All-gather each per-frame prediction array along axis 0 (frames). Every
-    rank ends up with the full-sequence arrays in global frame order."""
-    if ctx is None:
-        return pred
-    import torch.distributed as dist
-
-    full = {}
-    for key, arr in pred.items():
-        t = torch.from_numpy(arr).to(device).contiguous()
-        chunks = [torch.empty_like(t) for _ in range(ctx.sp_size)]
-        dist.all_gather(chunks, t, group=ctx.sp_group)
-        full[key] = torch.cat(chunks, dim=0).cpu().numpy()
-    return full
-
-
 def main():
-    from vggt_omega.distributed import init_sequence_parallel
+    dataset = build_dataset()
+    model = build_model()
 
-    ctx = init_sequence_parallel()  # None for single-process
-    dataset, frame_ids = build_dataset_and_frame_ids()
-    local_ids = shard_local_ids(frame_ids, ctx)
+    num_seqs = dataset.num_sequences()
+    logger.info(
+        f"{num_seqs} sequence(s) @ {effective_img_size()} long side "
+        f"(img_size {FLAGS.img_size} x scale {FLAGS.image_scale}), "
+        f"num_frames={'all' if FLAGS.num_frames <= 0 else FLAGS.num_frames}"
+    )
 
-    loaded = load_frames(dataset, local_ids, aspect_ratio)
-    pred = run_model(loaded["images_hwc"], ctx=ctx)
-    pred = gather_predictions(pred, ctx)
+    for seq_index in range(num_seqs):
+        seq_name = dataset.sequence_name(seq_index)
+        frame_ids = resolve_frame_ids(dataset, seq_index)
+        logger.info(f"[{seq_name}] ({seq_index + 1}/{num_seqs}) {len(frame_ids)} frames")
 
-    if ctx is None or ctx.sp_rank == 0:
-        full_loaded = loaded if ctx is None else load_frames(dataset, frame_ids, aspect_ratio)
-        dump_and_eval(frame_ids, full_loaded, pred)
+        sample = load_sample(dataset, seq_index, frame_ids)
+        pred = run_inference(model, sample["images"])
 
-    if ctx is not None:
-        import torch.distributed as dist
-        dist.barrier()
-        dist.destroy_process_group()
+        output_dir = os.path.join(FLAGS.output_root, seq_name)
+        dump_and_eval(seq_name, output_dir, frame_ids, gt_from_sample(sample), pred)
 
 
 if __name__ == "__main__":
+    try:
+        FLAGS(sys.argv)  # parse command-line flags
+    except gflags.FlagsError as err:
+        sys.exit(f"{err}\nUse --help for the full flag list.")
     main()

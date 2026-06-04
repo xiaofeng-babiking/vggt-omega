@@ -78,6 +78,10 @@ class ComposedDataset(Dataset, ABC):
 
         self.total_samples = len(self.base_dataset)
 
+        # Flat index over the vendors' real sequences (drives get_sample / the
+        # deterministic inference path). Cheap: sequence_list is already built.
+        self.sequence_index = self._build_sequence_index()
+
     def __len__(self):
         """Returns the total number of sequences in the dataset."""
         return self.total_samples
@@ -103,6 +107,17 @@ class ComposedDataset(Dataset, ABC):
 
         # Retrieve the raw data batch from the appropriate base dataset
         batch = self.base_dataset[idx_tuple]
+        return self._tensorize(batch)
+
+    def _tensorize(self, batch):
+        """Convert a raw numpy batch (from a vendor's ``get_data``) into the
+        training tensor sample dict: images normalized to ``(V,3,H,W)`` in
+        ``[0,1]``, every other modality stacked + tensorized, color augmentation
+        applied only when ``self.training``.
+
+        Shared by ``__getitem__`` (random-sampler path) and ``get_sample``
+        (explicit-ids eval/inference path), so the two paths can never diverge.
+        """
         seq_name = batch["seq_name"]
 
         # --- Data Conversion and Preparation ---
@@ -184,6 +199,54 @@ class ComposedDataset(Dataset, ABC):
 
         sample = carry_extra_modalities(batch, sample)
         return sample
+
+    # --- Explicit-ids eval/inference path -----------------------------------
+    # The training DataLoader (DynamicBatchSampler) injects random image counts,
+    # aspect ratios, sequences and frame ids -- incompatible with deterministic,
+    # ordered, sharded evaluation. These helpers reuse the SAME tensorization
+    # (_tensorize) for explicit sequences/ids, so inference stays training-identical.
+
+    def _build_sequence_index(self):
+        """Flat map: global sequence index -> ``(vendor, local_idx, seq_name)``,
+        built over the vendors' REAL ``sequence_list``. (``ConcatDataset``'s
+        ``cumulative_sizes`` use the virtual ``len_train``, so they cannot
+        enumerate real sequences.)"""
+        index = []
+        for vendor in self.base_dataset.datasets:
+            seq_list = getattr(vendor, "sequence_list", None)
+            if seq_list is None:
+                raise AttributeError(
+                    f"{type(vendor).__name__} exposes no `sequence_list`; "
+                    "ComposedDataset sequence enumeration requires one per vendor."
+                )
+            for local_idx, name in enumerate(seq_list):
+                index.append((vendor, local_idx, name))
+        return index
+
+    def num_sequences(self):
+        """Total number of real sequences across all composed vendors."""
+        return len(self.sequence_index)
+
+    def sequence_name(self, seq_index):
+        """Raw sequence name (the vendor's ``sequence_list`` entry) for a global index."""
+        return self.sequence_index[seq_index][2]
+
+    def sequence_num_frames(self, seq_index):
+        """Number of available frames in the sequence at a global sequence index."""
+        vendor, local_idx, _ = self.sequence_index[seq_index]
+        return vendor.sequence_num_frames(local_idx)
+
+    def get_sample(self, seq_index, ids, aspect_ratio=1.0):
+        """Tensorized sample for EXPLICIT, ordered frame ``ids`` of one sequence --
+        the training-identical inference path. Reuses ``_tensorize`` verbatim.
+        Passing ``seq_name`` (not ``seq_index``) to the vendor sidesteps its
+        ``inside_random`` remap, so the result is deterministic regardless of config.
+        """
+        vendor, _, name = self.sequence_index[seq_index]
+        batch = vendor.get_data(
+            seq_name=name, ids=np.asarray(ids), aspect_ratio=aspect_ratio
+        )
+        return self._tensorize(batch)
 
 
 class TupleConcatDataset(ConcatDataset):

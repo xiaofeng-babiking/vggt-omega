@@ -56,7 +56,25 @@ def _integration_common():
     )
 
 
-def _tum_dataset_cfg(seq="rgbd_dataset_freiburg3_sitting_halfsphere", n=20):
+def _eval_common():
+    """Deterministic eval-mode common_config: no aug, no random remap, explicit ids
+    honored verbatim (matches how inference.py drives the loader)."""
+    return OmegaConf.merge(
+        _integration_common(),
+        OmegaConf.create(
+            {
+                "training": False,
+                "inside_random": False,
+                "rescale_aug": False,
+                "get_nearby": False,
+                "allow_duplicate_img": False,
+                "augs": {"scales": None},
+            }
+        ),
+    )
+
+
+def _tum_dataset_cfg(seqs=("rgbd_dataset_freiburg3_sitting_halfsphere",), n=20):
     return {
         "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
         "dataset_configs": [
@@ -64,7 +82,7 @@ def _tum_dataset_cfg(seq="rgbd_dataset_freiburg3_sitting_halfsphere", n=20):
                 "_target_": "vggt_omega.datasets.vendors.tum.TumDataset",
                 "split": "train",
                 "TUM_DIR": TUM_DIR,
-                "sequences": [seq],
+                "sequences": list(seqs),
                 "len_train": n,
             }
         ],
@@ -202,3 +220,63 @@ def test_tum_full_dynamic_loader():
     finally:
         if created:
             dist.destroy_process_group()
+
+
+# --- ComposedDataset explicit-ids eval path (drives inference.py) ---
+
+
+@pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
+def test_composed_get_sample_honors_explicit_ids_and_tensorizes():
+    """ComposedDataset.get_sample tensorizes EXACTLY like get_data + the __getitem__
+    block, for explicit ordered ids (the training-identical inference path). The two
+    must not drift, and the requested id order must be honored verbatim."""
+    import torch
+    from hydra.utils import instantiate
+
+    composed = instantiate(
+        _tum_dataset_cfg(), common_config=_eval_common(), _recursive_=False
+    )
+    ids = [0, 7, 3, 12]
+    sample = composed.get_sample(0, ids=ids, aspect_ratio=0.75)
+
+    assert sample["images"].shape[0] == len(ids)
+    assert sample["images"].ndim == 4                       # (V, 3, H, W)
+    assert 0.0 <= float(sample["images"].min()) and float(sample["images"].max()) <= 1.0
+    assert sample["extrinsics"].shape == (len(ids), 3, 4)
+    assert "modalities" in sample
+
+    # Drift guard: the same vendor.get_data + manual tensorize must match byte-for-byte.
+    vendor = composed.base_dataset.datasets[0]
+    batch = vendor.get_data(
+        seq_name=composed.sequence_name(0), ids=np.array(ids), aspect_ratio=0.75
+    )
+    manual = (
+        torch.from_numpy(np.stack(batch["images"]).astype(np.float32))
+        .permute(0, 3, 1, 2)
+        .to(torch.get_default_dtype())
+        .div(255)
+    )
+    torch.testing.assert_close(sample["images"], manual)
+    # Order honored: per-frame timestamps follow the requested id order.
+    np.testing.assert_allclose(sample["timestamps"].numpy(), batch["timestamps"])
+
+
+@pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
+def test_composed_sequence_enumeration():
+    """num_sequences / sequence_name / sequence_num_frames expose the vendors' real
+    sequence_list (not the virtual len_train), so inference.py can iterate sequences."""
+    from hydra.utils import instantiate
+
+    seqs = [
+        "rgbd_dataset_freiburg3_sitting_halfsphere",
+        "rgbd_dataset_freiburg3_sitting_xyz",
+    ]
+    composed = instantiate(
+        _tum_dataset_cfg(seqs=seqs), common_config=_eval_common(), _recursive_=False
+    )
+    assert composed.num_sequences() == 2
+    vendor = composed.base_dataset.datasets[0]
+    for gi in range(composed.num_sequences()):
+        name = composed.sequence_name(gi)
+        assert name in seqs
+        assert composed.sequence_num_frames(gi) == len(vendor.data_store[name])
