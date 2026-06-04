@@ -419,11 +419,51 @@ def dump_and_eval(frame_ids, loaded, pred):
     )
 
 
+# --- distributed (Ulysses sequence-parallel) helpers -------------------------
+def shard_local_ids(frame_ids, ctx):
+    """This rank's contiguous frame block (all frames when single-process)."""
+    if ctx is None:
+        return frame_ids
+    from vggt_omega.distributed import shard_frames
+
+    return shard_frames(frame_ids, ctx.sp_size, ctx.sp_rank)
+
+
+def gather_predictions(pred, ctx):
+    """All-gather each per-frame prediction array along axis 0 (frames). Every
+    rank ends up with the full-sequence arrays in global frame order."""
+    if ctx is None:
+        return pred
+    import torch.distributed as dist
+
+    full = {}
+    for key, arr in pred.items():
+        t = torch.from_numpy(arr).to(device).contiguous()
+        chunks = [torch.empty_like(t) for _ in range(ctx.sp_size)]
+        dist.all_gather(chunks, t, group=ctx.sp_group)
+        full[key] = torch.cat(chunks, dim=0).cpu().numpy()
+    return full
+
+
 def main():
+    from vggt_omega.distributed import init_sequence_parallel
+
+    ctx = init_sequence_parallel()  # None for single-process
     dataset, frame_ids = build_dataset_and_frame_ids()
-    loaded = load_frames(dataset, frame_ids, aspect_ratio)
-    pred = run_model(loaded["images_hwc"])
-    dump_and_eval(frame_ids, loaded, pred)
+    local_ids = shard_local_ids(frame_ids, ctx)
+
+    loaded = load_frames(dataset, local_ids, aspect_ratio)
+    pred = run_model(loaded["images_hwc"], ctx=ctx)
+    pred = gather_predictions(pred, ctx)
+
+    if ctx is None or ctx.sp_rank == 0:
+        full_loaded = loaded if ctx is None else load_frames(dataset, frame_ids, aspect_ratio)
+        dump_and_eval(frame_ids, full_loaded, pred)
+
+    if ctx is not None:
+        import torch.distributed as dist
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
