@@ -16,3 +16,11 @@ skyseg.onnx.tmp
 *.pt
 *.pth
 *.safetensors
+
+uv.lock
+
+.vscode
+
+.mcp.json
+
+docs/

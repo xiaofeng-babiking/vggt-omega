@@ -122,6 +122,45 @@ with the default `mode="balanced"` and `image_resolution=512`. For these roughly
 `mode="max_size"` to resize the longest side to 512 instead; for the same aspect
 ratio, this gives about 512x336 inputs and uses less GPU memory.
 
+### Estimating peak memory
+
+Peak usage is well approximated by a fixed floor plus a term **linear in the total
+token count**. At patch size 16, an `H×W` input produces `P = (H÷16)·(W÷16)` patch
+tokens per frame, so for `N` frames:
+
+```
+peak_GB  ≈  5.9  +  7.3e-5 · N · P
+```
+
+**Where the constants come from.** Both are a least-squares fit to the table above,
+which is linear to within ~1%:
+
+- **`5.9 GB` — the floor** (independent of frame count): the model weights plus
+  runtime overhead. The `_1b_512` checkpoint is `1.144 B` parameters stored in
+  fp32, so the weights occupy `≈ 4.6 GB` on the GPU, and the CUDA / cuDNN / cuBLAS
+  context and allocator overhead add `≈ 1.3 GB`. Loading the weights in bf16 would
+  drop the floor to `≈ 3.6 GB`.
+- **`7.3e-5 GB ≈ 73 KB` per patch token — the slope**: the marginal activation per
+  token, dominated by the four cached multi-layer features the heads consume (each
+  `2·embed_dim` wide, kept for all frames) plus the per-pixel depth/conf outputs,
+  with the caching allocator's reservation headroom folded in. These are
+  `embed_dim`-wide activations (`73 KB ≈ 18 × embed_dim × 4 B`), so the slope scales
+  with `embed_dim`; resolution only changes `P`, the number of tokens.
+
+The term is linear in `N` (not quadratic) because inference runs under
+`torch.inference_mode()`, which frees activations as they are consumed, and
+`scaled_dot_product_attention` uses the memory-efficient backend, so attention
+memory stays linear even though its compute is `O(N²)`. The per-token cost is
+essentially resolution-independent (`7.3e-5` at both 624x416 and 640x480), so peak
+is set by the total token count `N·P` — which is why the estimate takes only frame
+count and resolution as inputs.
+
+Worked examples: 624x416 (`P = 1014`) at 500 frames → `≈ 42.9 GB` (43.15 measured);
+native 640x480 (`P = 1200`) → `≈ 99 GB` at 1069 frames (OOM on an 80 GB GPU, as
+observed). The constants are calibrated for this 1B model with fp32 weights on an A100-class GPU
+and shift with dtype, attention backend, or the alignment head enabled; the model
+covers memory only, not the `O(N²)` runtime.
+
 ## License
 
 See the [LICENSE](./LICENSE) file for details about the license under which

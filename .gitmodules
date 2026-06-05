@@ -1,0 +1,3 @@
+[submodule "data_engine/dynamic_mask/GroundingDINO"]
+	path = data_engine/dynamic_mask/GroundingDINO
+	url = git@github.com:IDEA-Research/GroundingDINO.git
