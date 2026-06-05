@@ -1,8 +1,12 @@
-"""Run VGGT-Omega on TUM RGB-D sequences and evaluate camera-pose + mono-depth.
+"""Run VGGT-Omega on a dataset's sequences and evaluate camera-pose + mono-depth.
 
-Drives inference from the *training* :class:`~vggt_omega.datasets.composed_dataset.ComposedDataset`
-(instantiated from the dataset Hydra config, eval knobs overridden), so each frame
-is tensorized through the exact same contract the model is trained on. Per sequence we:
+Drives inference from the *training* :class:`~vggt_omega.datasets.composed_dataset.ComposedDataset`,
+instantiated from a per-dataset configure (``--configure``) loaded with OmegaConf,
+so each frame is tensorized through the exact same contract the model is trained
+on. The configure file carries the ``dataset`` + ``common_config`` (with the eval
+overrides baked in) plus an ``inference`` block (``num_frames``, ``image_scale``)
+that shapes the frames/resolution the dataset yields; the checkpoint and the
+output/fusion knobs stay as command-line flags. Per sequence we:
 
   1. predict **camera poses** and **monocular depth** (+ a fused point cloud);
   2. dump them (depth/conf PNGs, ``cameras.json``, ``pointcloud.ply``);
@@ -18,12 +22,12 @@ Conventions (see ``vggt_omega/datasets``): extrinsics are world-to-camera OpenCV
 a global scale, so depth uses a per-image median scale and poses a Umeyama
 ``Sim3`` alignment before scoring.
 
-Usage (all arguments are gflags; defaults run ALL sequences, ALL frames, native
-resolution), single GPU::
+Usage (the dataset, sequences, frame count and resolution come from the
+``--configure`` file; the checkpoint and output/fusion knobs are flags), single GPU::
 
     python inference.py
-    python inference.py --image_scale=0.5 --sequences=rgbd_dataset_freiburg3_sitting_halfsphere
-    python inference.py --num_frames=200 --tum_dir=/path/to/tum
+    python inference.py --configure vggt_omega/datasets/config/tum.yaml
+    python inference.py --checkpoint /path/to/model.pt --output_root /tmp/out
 
 ``--help`` lists every flag.
 """
@@ -50,45 +54,49 @@ from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
 logger = get_logger("vggt_omega.inference")
 
-# Training dataset Hydra config (anchors common_conf so eval geometry/tensorization
-# stay identical to training; only the eval knobs below are overridden).
+# Per-dataset configure dir (ships tum.yaml, the default --configure target).
 DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "config")
 
 # --- command-line flags ------------------------------------------------------
+# Inputs to locate (checkpoint, configure) plus the output/fusion knobs. The
+# dataset-loading knobs (num_frames, image_scale) live in the configure YAML's
+# `inference` block instead, since they shape what frames/resolution the dataset
+# yields and so belong with the dataset definition.
 FLAGS = gflags.FLAGS
 gflags.DEFINE_string(
-    "checkpoint", "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt",
-    "Path to the VGGT-Omega checkpoint (.pt).")
+    "checkpoint",
+    "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt",
+    "Path to the VGGT-Omega checkpoint (.pt).",
+)
 gflags.DEFINE_string(
-    "tum_dir", "/jfs/guibiao/streamVGGT/data/eval/tum",
-    "Root directory holding the TUM RGB-D sequence folders.")
-gflags.DEFINE_list(
-    "sequences", [],
-    "TUM sequences to run, as names or glob patterns (e.g. 'rgbd_dataset_freiburg3_*'). "
-    "Empty (default) = ALL sequences under --tum_dir.")
-gflags.DEFINE_integer(
-    "num_frames", 720,
-    "Frames per sequence. 0 (default) = ALL frames; otherwise this many, evenly spaced and ordered.")
-gflags.DEFINE_float(
-    "image_scale", 1.0,
-    "Resolution scale factor. 1.0 (default) = the dataset's native long side; the effective "
-    "long side is round(native_long * image_scale) snapped to a multiple of 16.")
+    "configure",
+    os.path.join(DATASET_CONFIG_DIR, "tum.yaml"),
+    "Path to the per-dataset configure (.yaml): `dataset` + `common_config` + an "
+    "`inference` block (num_frames, image_scale), loaded with OmegaConf and "
+    "instantiated like training.",
+)
 gflags.DEFINE_string(
-    "output_root", "outputs",
-    "Output root directory; a per-sequence subdirectory is created under it.")
+    "output_root",
+    "outputs",
+    "Output root directory; a per-sequence subdirectory is created under it.",
+)
 gflags.DEFINE_float(
-    "conf_percentile", 20.0,
-    "Drop the lowest this-percent of points (by confidence) from the fused cloud.")
+    "conf_percentile",
+    20.0,
+    "Drop the lowest this-percent of points (by confidence) from the fused cloud.",
+)
 gflags.DEFINE_integer(
-    "max_points", 5_000_000,
-    "Cap on exported point-cloud size (the fused cloud is a visualization, not scored).")
+    "max_points",
+    5_000_000,
+    "Cap on exported point-cloud size (the fused cloud is a visualization, not scored).",
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def effective_long_side(native_long: int) -> int:
-    """Native long side scaled by --image_scale, snapped to a /16 multiple (ViT-friendly)."""
-    return max(16, int(round(native_long * FLAGS.image_scale / 16)) * 16)
+def effective_long_side(native_long: int, image_scale: float) -> int:
+    """Native long side scaled by `image_scale`, snapped to a /16 multiple (ViT-friendly)."""
+    return max(16, int(round(native_long * image_scale / 16)) * 16)
 
 
 def gpu_status(tag: str) -> None:
@@ -124,7 +132,9 @@ def unproject_depth_map_to_point_map(
     cx = intrinsic[:, 0, 2][:, None, None]
     cy = intrinsic[:, 1, 2][:, None, None]
 
-    camera_points = np.stack([(x - cx) / fx * depth, (y - cy) / fy * depth, depth], axis=-1)
+    camera_points = np.stack(
+        [(x - cx) / fx * depth, (y - cy) / fy * depth, depth], axis=-1
+    )
     rotation = extrinsic[:, :3, :3]
     translation = extrinsic[:, :3, 3]
     return np.einsum(
@@ -171,60 +181,60 @@ def write_ply(path: str, points: np.ndarray, colors: np.ndarray) -> None:
     vertex = np.empty(
         n,
         dtype=np.dtype(
-            [("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
-             ("red", "u1"), ("green", "u1"), ("blue", "u1")]
+            [
+                ("x", "<f4"),
+                ("y", "<f4"),
+                ("z", "<f4"),
+                ("red", "u1"),
+                ("green", "u1"),
+                ("blue", "u1"),
+            ]
         ),
     )
     vertex["x"], vertex["y"], vertex["z"] = points[:, 0], points[:, 1], points[:, 2]
-    vertex["red"], vertex["green"], vertex["blue"] = colors[:, 0], colors[:, 1], colors[:, 2]
+    vertex["red"], vertex["green"], vertex["blue"] = (
+        colors[:, 0],
+        colors[:, 1],
+        colors[:, 2],
+    )
     with open(path, "wb") as f:
         f.write(header.encode("ascii"))
         f.write(vertex.tobytes())
 
 
-# --- 1. Load TUM sequences (RGB + GT depth/poses/intrinsics) ------------------
-def build_dataset() -> ComposedDataset:
-    """Instantiate the *training* ComposedDataset from the dataset Hydra config,
-    overriding only the eval knobs.
+# --- 1. Load the dataset (RGB + GT depth/poses/intrinsics) --------------------
+def load_config():
+    """Load the per-dataset configure (.yaml) with OmegaConf. It must define
+    ``dataset`` + ``common_config`` (instantiated like training) and an
+    ``inference`` block with ``num_frames`` and ``image_scale`` (the dataset
+    sampling / resolution knobs). Output/fusion knobs are command-line flags."""
+    return OmegaConf.load(FLAGS.configure)
 
-    Everything else (patch_size, rescale, landscape_check, load_track, the TUM
-    vendor settings) is inherited from the training config, so inference cannot
-    silently drift from training. The overrides reproduce deterministic eval
-    geometry: native resolution, no scale/colour augmentation, explicit ordered
-    ids honored verbatim (no random remap / nearby-window sampling).
+
+def build_dataset(cfg) -> ComposedDataset:
+    """Instantiate the *training* ComposedDataset from the per-dataset configure.
+
+    The configure file (loaded by :func:`load_config`) supplies ``dataset`` and
+    ``common_config`` verbatim, with the eval overrides (training off, ordered
+    ids, deterministic resize, no augmentation) already baked into the YAML and
+    instantiated exactly as training does -- so inference cannot silently drift.
+    The target long side is the data's NATIVE long side x ``inference.image_scale``,
+    read from the dataset itself rather than hardcoded.
     """
-    cfg = OmegaConf.merge(
-        OmegaConf.load(os.path.join(DATASET_CONFIG_DIR, "default_dataset.yaml")),
-        OmegaConf.load(os.path.join(DATASET_CONFIG_DIR, "default.yaml")),
-    )
-    common = cfg.data.train.common_config
-    common.training = False                  # no scale/colour augmentation
-    common.inside_random = False             # honor explicit seq_index / ids
-    common.rescale_aug = False               # deterministic resize
-    common.get_nearby = False                # use our ordered ids verbatim
-    common.allow_duplicate_img = False
-    common.augs.scales = None
-
-    dataset_cfg = cfg.data.train.dataset
-    vendor_cfg = dataset_cfg.dataset_configs[0]
-    vendor_cfg.TUM_DIR = FLAGS.tum_dir
-    vendor_cfg.sequences = list(FLAGS.sequences) if FLAGS.sequences else ["*"]
-
-    dataset = instantiate(dataset_cfg, common_config=common, _recursive_=False)
-    # Evaluate at the data's NATIVE long side (x --image_scale), read from the
-    # dataset itself rather than hardcoded.
+    dataset = instantiate(cfg.dataset, common_config=cfg.common_config, _recursive_=False)
     native_h, native_w = dataset.native_image_size()
-    dataset.set_img_size(effective_long_side(max(native_h, native_w)))
+    dataset.set_img_size(
+        effective_long_side(max(native_h, native_w), cfg.inference.image_scale)
+    )
     return dataset
 
 
-def resolve_frame_ids(dataset: ComposedDataset, seq_index: int) -> np.ndarray:
-    """Ordered frame ids for one sequence: all frames (--num_frames<=0) or evenly spaced."""
+def resolve_frame_ids(dataset: ComposedDataset, seq_index: int, num_frames: int) -> np.ndarray:
+    """Ordered frame ids for one sequence: all frames (``num_frames<=0``) or evenly spaced."""
     num_available = dataset.sequence_num_frames(seq_index)
-    nf = FLAGS.num_frames
-    if nf <= 0 or nf >= num_available:
-        return np.arange(num_available)                                  # ALL frames, ordered
-    return np.linspace(0, num_available - 1, nf).round().astype(int)
+    if num_frames <= 0 or num_frames >= num_available:
+        return np.arange(num_available)  # ALL frames, ordered
+    return np.linspace(0, num_available - 1, num_frames).round().astype(int)
 
 
 def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
@@ -242,8 +252,12 @@ def gt_from_sample(sample: dict) -> dict:
     """Pull the ground-truth arrays inference scores against (eval semantics
     unchanged: GT depth + extrinsics; predicted intrinsics drive unprojection)."""
     return {
-        "gt_depth": sample["depths"].numpy().astype(np.float32),            # (S, H, W) m, 0=invalid
-        "gt_extrinsics": sample["extrinsics"].numpy().astype(np.float32),   # (S, 3, 4) world->cam
+        "gt_depth": sample["depths"]
+        .numpy()
+        .astype(np.float32),  # (S, H, W) m, 0=invalid
+        "gt_extrinsics": sample["extrinsics"]
+        .numpy()
+        .astype(np.float32),  # (S, 3, 4) world->cam
     }
 
 
@@ -263,7 +277,9 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
     by the dataset loader -- no hand-rolled normalization here.
     """
     images = images.contiguous().to(device)
-    logger.info(f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ...")
+    logger.info(
+        f"running inference on {images.shape[0]} frames @ {images.shape[-2]}x{images.shape[-1]} (HxW) ..."
+    )
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     t_infer = time.time()
@@ -291,15 +307,26 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
 
     # Pull to CPU/numpy (float() guards against bf16, which numpy can't hold).
     return {
-        "pred_depth": predictions["depth"].float().cpu().numpy()[0],        # (S, H, W, 1)
-        "pred_conf": predictions["depth_conf"].float().cpu().numpy()[0],    # (S, H, W)
-        "images_pred": predictions["images"].float().cpu().numpy()[0],      # (S, 3, H, W) [0,1]
-        "pred_extrinsics": extrinsics.float().cpu().numpy()[0],             # (S, 3, 4) world->cam
-        "pred_intrinsics": intrinsics.float().cpu().numpy()[0],             # (S, 3, 3) pixels
+        "pred_depth": predictions["depth"].float().cpu().numpy()[0],  # (S, H, W, 1)
+        "pred_conf": predictions["depth_conf"].float().cpu().numpy()[0],  # (S, H, W)
+        "images_pred": predictions["images"]
+        .float()
+        .cpu()
+        .numpy()[0],  # (S, 3, H, W) [0,1]
+        "pred_extrinsics": extrinsics.float().cpu().numpy()[0],  # (S, 3, 4) world->cam
+        "pred_intrinsics": intrinsics.float().cpu().numpy()[0],  # (S, 3, 3) pixels
     }
 
 
-def dump_and_eval(seq_name: str, output_dir: str, frame_ids, loaded: dict, pred: dict) -> None:
+def dump_and_eval(
+    seq_name: str,
+    output_dir: str,
+    frame_ids,
+    loaded: dict,
+    pred: dict,
+    conf_percentile: float,
+    max_points: int,
+) -> None:
     """Dump predictions, fuse the PLY, evaluate metrics, and report for one sequence."""
     pred_depth = pred["pred_depth"]
     pred_conf = pred["pred_conf"]
@@ -310,8 +337,8 @@ def dump_and_eval(seq_name: str, output_dir: str, frame_ids, loaded: dict, pred:
     gt_extrinsics = loaded["gt_extrinsics"]
 
     num_f, height, width = pred_depth.shape[:3]
-    pred_depth_2d = pred_depth[..., 0]                                  # (S, H, W)
-    images_hwc_pred = np.transpose(images_np, (0, 2, 3, 1))            # (S, H, W, 3)
+    pred_depth_2d = pred_depth[..., 0]  # (S, H, W)
+    images_hwc_pred = np.transpose(images_np, (0, 2, 3, 1))  # (S, H, W, 3)
 
     # --- 3. Dump predicted depth/conf PNGs + cameras.json ------------------------
     depth_dir = os.path.join(output_dir, "depth")
@@ -369,14 +396,14 @@ def dump_and_eval(seq_name: str, output_dir: str, frame_ids, loaded: dict, pred:
     depth_flat = pred_depth_2d.reshape(-1)
 
     mask = np.isfinite(points).all(axis=1) & np.isfinite(conf_flat) & (depth_flat > 0)
-    if FLAGS.conf_percentile > 0 and mask.any():
-        threshold = np.percentile(conf_flat[mask], FLAGS.conf_percentile)
+    if conf_percentile > 0 and mask.any():
+        threshold = np.percentile(conf_flat[mask], conf_percentile)
         mask &= conf_flat >= threshold
     points, colors = points[mask], colors[mask]
 
-    if FLAGS.max_points and points.shape[0] > FLAGS.max_points:
+    if max_points and points.shape[0] > max_points:
         rng = np.random.default_rng(0)
-        keep = rng.choice(points.shape[0], size=FLAGS.max_points, replace=False)
+        keep = rng.choice(points.shape[0], size=max_points, replace=False)
         points, colors = points[keep], colors[keep]
 
     ply_path = os.path.join(output_dir, "pointcloud.ply")
@@ -435,25 +462,37 @@ def dump_and_eval(seq_name: str, output_dir: str, frame_ids, loaded: dict, pred:
 
 
 def main():
-    dataset = build_dataset()
+    cfg = load_config()
+    inf = cfg.inference
+    dataset = build_dataset(cfg)
     model = build_model()
 
     num_seqs = dataset.num_sequences()
     logger.info(
-        f"{num_seqs} sequence(s) @ {dataset.img_size} long side (scale {FLAGS.image_scale}), "
-        f"num_frames={'all' if FLAGS.num_frames <= 0 else FLAGS.num_frames}"
+        f"{num_seqs} sequence(s) @ {dataset.img_size} long side (scale {inf.image_scale}), "
+        f"num_frames={'all' if inf.num_frames <= 0 else inf.num_frames}"
     )
 
     for seq_index in range(num_seqs):
         seq_name = dataset.sequence_name(seq_index)
-        frame_ids = resolve_frame_ids(dataset, seq_index)
-        logger.info(f"[{seq_name}] ({seq_index + 1}/{num_seqs}) {len(frame_ids)} frames")
+        frame_ids = resolve_frame_ids(dataset, seq_index, inf.num_frames)
+        logger.info(
+            f"[{seq_name}] ({seq_index + 1}/{num_seqs}) {len(frame_ids)} frames"
+        )
 
         sample = load_sample(dataset, seq_index, frame_ids)
         pred = run_inference(model, sample["images"])
 
         output_dir = os.path.join(FLAGS.output_root, seq_name)
-        dump_and_eval(seq_name, output_dir, frame_ids, gt_from_sample(sample), pred)
+        dump_and_eval(
+            seq_name,
+            output_dir,
+            frame_ids,
+            gt_from_sample(sample),
+            pred,
+            FLAGS.conf_percentile,
+            FLAGS.max_points,
+        )
 
 
 if __name__ == "__main__":
