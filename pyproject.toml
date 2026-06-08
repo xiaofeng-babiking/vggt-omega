@@ -38,7 +38,9 @@ train = [
     "omegaconf>=2.3",
 ]
 viz = [
-    "rerun-sdk>=0.20",
+    # >=0.23 for the unified `rr.set_time` timeline API (replaced the removed
+    # `set_time_seconds`/`set_time_sequence`); the adapter targets the 0.2x+ API.
+    "rerun-sdk>=0.23",
 ]
 
 [build-system]

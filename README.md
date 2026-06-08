@@ -102,6 +102,105 @@ The demo accepts uploaded images or a video, runs camera and depth inference,
 and visualizes the depth-unprojected point cloud and predicted cameras as a GLB
 scene.
 
+## Dataset Visualization (Rerun)
+
+Inspect a dataset sequence — RGB, depth, camera frusta, the world point cloud,
+and the camera trajectory — in [Rerun](https://rerun.io), with every modality
+placed on its real per-frame **timestamp** timeline so you can scrub by capture
+time. It runs **headless**: write a `.rrd` per sequence (or stream live) and view
+it in a browser via `rerun --serve-web`.
+
+Install the optional viz dependency (adds `rerun-sdk`, which also provides the
+`rerun` CLI):
+
+```bash
+pip install -e '.[viz]'
+```
+
+Point the loader at your data by editing `TUM_DIR` in
+[`vggt_omega/datasets/config/tum.yaml`](./vggt_omega/datasets/config/tum.yaml).
+This is the same per-dataset `--configure` file inference uses, so what you
+visualize is exactly what training/inference tensorizes.
+
+### Write `.rrd` files, then serve them
+
+```bash
+# one .rrd per TUM sequence found under TUM_DIR
+python -m vggt_omega.datasets.adapters \
+  --configure vggt_omega/datasets/config/tum.yaml \
+  --out rerun_out --num-frames 90 --point-stride 8
+
+# serve the web viewer; open the printed http://<host>:9090 in a browser
+rerun --serve-web rerun_out/*.rrd
+```
+
+On a remote/headless host, forward the web port over SSH
+(`ssh -L 9090:localhost:9090 <host>`) and open `http://localhost:9090`.
+
+### Stream live (no files)
+
+```bash
+# A) into a running web viewer — open the browser FIRST (it forwards live)
+rerun --serve-web &
+python -m vggt_omega.datasets.adapters \
+  --configure vggt_omega/datasets/config/tum.yaml --connect
+
+# B) host a buffering server in-process; attach a viewer whenever, then Ctrl-C
+python -m vggt_omega.datasets.adapters \
+  --configure vggt_omega/datasets/config/tum.yaml --serve
+```
+
+Useful flags: `--seq-index N` (one sequence; default = all), `--num-frames K`
+(`<=0` = all frames, evenly spaced; lower it for large sequences),
+`--point-stride S` (subsample the world cloud — higher = lighter output), and
+`--accumulate` (keep every frame's cloud instead of replacing it per frame).
+
+The adapter is modality-driven, so the same commands work for the 7-Scenes loader
+(`vggt_omega/datasets/config/` + `--configure`) and any future vendor — it renders
+whatever modalities a sample declares.
+
+### Wrap a dataset for a train / test pipeline (`RerunDataset`)
+
+`RerunDataset` wraps **any** VGGT-Omega dataset into a transparent, torch-style
+logging dataset: it forwards every method to the inner dataset, and each sample
+you fetch — via `ds[idx]` (the training/DataLoader path) or `ds.get_sample(...)`
+(the ordered eval/inference path) — passes through **unchanged** while being
+logged to Rerun as a side effect. Drop it into any pipeline for free 3D
+inspection, with no changes to your data flow:
+
+```python
+from torch.utils.data import DataLoader
+from vggt_omega.datasets.adapters import RerunDataset
+
+# A) one .rrd per sequence — offline, fork-safe with DataLoader workers
+ds = RerunDataset(base_dataset, out_dir="rerun_out", point_stride=8)
+for sample in DataLoader(ds, batch_size=None, num_workers=4):
+    train_step(sample)                      # each sample also written to rerun_out/
+
+# B) stream every sample into one live recording (single process)
+import rerun as rr
+rr.init("vggt", spawn=True)                 # or pass recording=rr.RecordingStream(...)
+ds = RerunDataset(base_dataset)             # logs to the current recording
+for sample in ds:                           # scrub the `sample` timeline in the viewer
+    ...
+
+# C) drop-in for the eval/inference path (same signature as the dataset)
+viz = RerunDataset(dataset, out_dir="rerun_out")
+sample = viz.get_sample(seq_index=0, ids=[0, 10, 20], aspect_ratio=0.75)
+```
+
+Use `out_dir=` for DataLoader workers (`num_workers > 0`); the `recording=` /
+current-recording modes hold a live stream and are single-process only.
+
+Or log a single already-loaded sample with the lower-level primitives:
+
+```python
+from vggt_omega.datasets.adapters import sample_to_rrd  # or: log_sample(sample, recording)
+
+sample = dataset.get_sample(seq_index=0, ids=[0, 10, 20], aspect_ratio=0.75)
+sample_to_rrd(sample, "seq.rrd")   # then: rerun --serve-web seq.rrd
+```
+
 ## Runtime and GPU Memory
 
 We benchmark the end-to-end peak GPU memory usage of `VGGT-Omega-1B-512` on a
