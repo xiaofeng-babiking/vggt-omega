@@ -150,6 +150,43 @@ python -m vggt_omega.datasets.adapters \
   --configure vggt_omega/datasets/config/tum.yaml --serve
 ```
 
+### Share on the LAN
+
+`rerun --serve-web` already binds to all interfaces (`--bind` defaults to
+`0.0.0.0`), so other machines on the network can reach it directly — no SSH
+tunnel needed. It opens **two** ports that a remote viewer both needs: **9090**
+(`--web-viewer-port`, the viewer app over HTTP) and **9876** (`--port`, the gRPC
+proxy that streams the data). Open both in the firewall:
+
+```bash
+sudo ufw allow 9090/tcp && sudo ufw allow 9876/tcp          # or firewalld:
+sudo firewall-cmd --add-port=9090/tcp --add-port=9876/tcp   # add --permanent to persist
+```
+
+Then from any other machine, open the URL `--serve-web` prints but replace
+`0.0.0.0`/`localhost` with the server's LAN IP — in **both** the page host and
+the `?url=` gRPC address:
+
+```
+http://<server-ip>:9090/?url=rerun%2Bhttp%3A%2F%2F<server-ip>%3A9876%2Fproxy
+```
+
+The `?url=` part tells the viewer which gRPC proxy to dial; if it points at
+`localhost` a remote browser looks on its own machine and shows nothing. (A
+literal `+` in a query string decodes to a space, so the proxy scheme must be the
+encoded `rerun%2Bhttp://…` — easiest is to copy Rerun's printed URL and just swap
+the host. Alternatively open `http://<server-ip>:9090` and add the connection
+`rerun+http://<server-ip>:9876/proxy` from the viewer's UI.) If the browser
+reports a CORS error, allow the viewer origin explicitly:
+`rerun --serve-web --cors-allow-origin "http://<server-ip>:9090" …`.
+
+When streaming live from a **different** machine than the server, point the
+adapter at it too: `--connect rerun+http://<server-ip>:9876/proxy`.
+
+This exposes the data unauthenticated to anyone who can reach those ports — fine
+on a trusted LAN; on an untrusted network prefer the SSH forward above
+(`ssh -L 9090:localhost:9090 <host>`) or restrict the firewall to specific IPs.
+
 Useful flags: `--seq-index N` (one sequence; default = all), `--num-frames K`
 (`<=0` = all frames, evenly spaced; lower it for large sequences),
 `--point-stride S` (subsample the world cloud — higher = lighter output), and
