@@ -3,11 +3,9 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.attention import AllGatherKVAttention
 from vggt_omega.distributed.block import distributed_block_forward
-from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
+from vggt_omega.distributed.tests._dist_test_util import init_finite, run_distributed
 from vggt_omega.models.layers import Mlp
 from vggt_omega.models.layers.block import SelfAttentionBlock
-
-pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 DIM, HEADS, TOKENS = 32, 4, 5
 
@@ -18,11 +16,9 @@ def _make_block():
         dim=DIM, num_heads=HEADS, ffn_ratio=4.0, qkv_bias=True, proj_bias=True,
         ffn_bias=True, ffn_layer=Mlp, init_values=1e-5, use_qk_norm=True, mask_k_bias=True,
     ).eval()
-    # mask_k_bias buffers default to NaN; set to ones so the bias is active and finite.
-    for m in block.modules():
-        if hasattr(m, "bias_mask"):
-            torch.nn.init.ones_(m.bias_mask)
-    return block
+    # Initialize all params (LayerScale.gamma etc. are torch.empty until reset) and
+    # set the NaN-by-design mask_k_bias to ones, so the from-scratch block is finite.
+    return init_finite(block)
 
 
 def _make_x(num_frames):

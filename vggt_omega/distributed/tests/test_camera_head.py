@@ -3,10 +3,8 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.attention import AllGatherKVAttention
 from vggt_omega.distributed.camera_head import ContextParallelCameraHead
-from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
+from vggt_omega.distributed.tests._dist_test_util import init_finite, run_distributed
 from vggt_omega.models.heads import CameraHead
-
-pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 DIM_IN, NUM_FRAMES, PTS = 32, 6, 3  # patch_token_start = 1 + num_register
 
@@ -14,10 +12,9 @@ DIM_IN, NUM_FRAMES, PTS = 32, 6, 3  # patch_token_start = 1 + num_register
 def _make_head():
     torch.manual_seed(13)
     head = CameraHead(dim_in=DIM_IN).eval()
-    for m in head.modules():
-        if hasattr(m, "bias_mask"):
-            torch.nn.init.ones_(m.bias_mask)
-    return head
+    # Initialize all params (LayerScale.gamma etc. are torch.empty until reset) and
+    # set the NaN-by-design mask_k_bias to ones, so the from-scratch head is finite.
+    return init_finite(head)
 
 
 def _make_tokens(num_frames, num_tokens):

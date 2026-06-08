@@ -3,10 +3,8 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.aggregator import ContextParallelAggregator
 from vggt_omega.distributed.attention import AllGatherKVAttention
-from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
+from vggt_omega.distributed.tests._dist_test_util import init_finite, run_distributed
 from vggt_omega.models.aggregator import Aggregator
-
-pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 # Tiny aggregator config for speed (real defaults: depth=24, embed_dim=1024).
 CFG = dict(patch_size=16, embed_dim=64, depth=4, num_heads=4,
@@ -18,10 +16,9 @@ NUM_FRAMES, IMG = 6, 32  # 32/16 = 2x2 patch grid
 def _make_aggregator():
     torch.manual_seed(11)
     agg = Aggregator(**CFG).eval()
-    for m in agg.modules():
-        if hasattr(m, "bias_mask"):
-            torch.nn.init.ones_(m.bias_mask)
-    return agg
+    # Initialize all params (LayerScale.gamma etc. are torch.empty until reset) and
+    # set the NaN-by-design mask_k_bias to ones, so the from-scratch model is finite.
+    return init_finite(agg)
 
 
 def _make_images(num_frames):

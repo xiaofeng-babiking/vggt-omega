@@ -1,33 +1,38 @@
 """Helpers to run a function across a spawned gloo process group and collect results.
 
-The gloo/CPU distributed path is DISABLED by default. torch 2.12.0+cu130 (the
-stable build this project pins for CUDA 13) has a CPU-backend defect: after a
-gloo collective, plain CPU ops (e.g. ``nn.LayerNorm``) intermittently return NaN
-on identical, finite, deterministic input — so these multi-rank parity tests
-flake (~30-40%) once several gloo groups run in one pytest session. The defect is
-in torch, not in this code: the logic is verified by review, by per-file/isolated
-runs, and by a 40x standalone loop, and production inference runs on NCCL/GPU
-(``distributed_inference.py`` uses ``backend="nccl"``), which never touches gloo.
-
-We therefore skip the gloo parity tests unless explicitly opted in with
-``RUN_DIST_TESTS=1``. Apply ``pytestmark = requires_dist`` at module level in any
-test module that calls :func:`run_distributed`. Pure-CPU tests (no collectives)
-keep running unconditionally.
+These multi-rank parity tests run on the gloo/CPU backend so they need no GPU.
+A from-scratch model must be initialized with :func:`init_finite` before use:
+several params (e.g. ``LayerScale.gamma``) are allocated with ``torch.empty`` and
+left uninitialized until ``reset_parameters()``/the checkpoint fills them, which
+under pytest memory churn yields garbage that overflows to NaN. See that helper.
 """
 import os
 import socket
 import tempfile
 
-import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-requires_dist = pytest.mark.skipif(
-    os.environ.get("RUN_DIST_TESTS") != "1",
-    reason="gloo/CPU distributed path disabled (torch 2.12.0+cu130 CPU-backend NaN bug); "
-    "set RUN_DIST_TESTS=1 to run these multi-rank parity tests anyway",
-)
+
+def init_finite(module):
+    """Initialize a from-scratch module so every parameter is finite & well-conditioned.
+
+    Several submodules allocate parameters with ``torch.empty`` and rely on
+    ``reset_parameters()`` (or the released checkpoint) to fill them — notably
+    ``LayerScale.gamma`` and ``LinearKMaskedBias.bias_mask`` (NaN by design). On a
+    fresh process ``torch.empty`` happens to return zeros, but under pytest memory
+    churn it returns reused garbage (occasionally huge), which overflows to ``inf``
+    and then ``NaN`` downstream. Tests MUST initialize these before use.
+    """
+    for m in module.modules():
+        reset = getattr(m, "reset_parameters", None)
+        if callable(reset):
+            reset()
+    for name, buf in module.named_buffers():
+        if name.endswith("bias_mask"):
+            torch.nn.init.ones_(buf)
+    return module
 
 
 def free_port() -> int:
