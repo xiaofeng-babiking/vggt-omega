@@ -16,10 +16,10 @@ def free_port() -> int:
     return port
 
 
-def _entry(rank, world_size, port, out_dir, fn, args):
+def _entry(rank, world_size, init_method, out_dir, fn, args):
     dist.init_process_group(
         backend="gloo", rank=rank, world_size=world_size,
-        init_method=f"tcp://127.0.0.1:{port}",
+        init_method=init_method,
     )
     try:
         result = fn(rank, world_size, *args)
@@ -31,7 +31,14 @@ def _entry(rank, world_size, port, out_dir, fn, args):
 
 def run_distributed(fn, world_size, *args):
     """Spawn `world_size` gloo procs, run fn(rank, world_size, *args), return list-by-rank."""
-    out_dir = tempfile.mkdtemp()
-    port = free_port()
-    mp.spawn(_entry, args=(world_size, port, out_dir, fn, args), nprocs=world_size, join=True)
-    return [torch.load(os.path.join(out_dir, f"r{r}.pt")) for r in range(world_size)]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # File-based gloo rendezvous avoids the TOCTOU race of binding a free TCP port.
+        # gloo creates the rendezvous file itself, so it must NOT be pre-created.
+        init_method = f"file://{os.path.join(tmpdir, 'rendezvous')}"
+        mp.spawn(_entry, args=(world_size, init_method, tmpdir, fn, args), nprocs=world_size, join=True)
+        # weights_only=False: trusted test-only data; allows arbitrary result
+        # structures (tuples/dicts/tensors) returned by fn to load correctly.
+        return [
+            torch.load(os.path.join(tmpdir, f"r{r}.pt"), weights_only=False)
+            for r in range(world_size)
+        ]

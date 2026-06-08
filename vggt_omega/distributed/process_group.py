@@ -19,7 +19,7 @@ def init_distributed() -> tuple[int, int, int]:
     return rank, world_size, local_rank
 
 
-def cp_group():
+def cp_group() -> "dist.ProcessGroup | None":
     """The context-parallel group (== world group for inference)."""
     return dist.group.WORLD
 
