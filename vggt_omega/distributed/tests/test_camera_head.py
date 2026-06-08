@@ -3,8 +3,10 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.attention import AllGatherKVAttention
 from vggt_omega.distributed.camera_head import ContextParallelCameraHead
-from vggt_omega.distributed.tests._dist_test_util import run_distributed
+from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
 from vggt_omega.models.heads import CameraHead
+
+pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 DIM_IN, NUM_FRAMES, PTS = 32, 6, 3  # patch_token_start = 1 + num_register
 

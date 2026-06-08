@@ -3,7 +3,9 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from vggt_omega.distributed.attention import AllGatherKVAttention
-from vggt_omega.distributed.tests._dist_test_util import run_distributed
+from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
+
+pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 # Fixed reference tensors (seed makes them deterministic across the test + workers).
 B, H, D = 1, 4, 8

@@ -3,8 +3,10 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.aggregator import ContextParallelAggregator
 from vggt_omega.distributed.attention import AllGatherKVAttention
-from vggt_omega.distributed.tests._dist_test_util import run_distributed
+from vggt_omega.distributed.tests._dist_test_util import requires_dist, run_distributed
 from vggt_omega.models.aggregator import Aggregator
+
+pytestmark = requires_dist  # gloo/CPU path disabled on torch 2.12.0+cu130 (RUN_DIST_TESTS=1 to run)
 
 # Tiny aggregator config for speed (real defaults: depth=24, embed_dim=1024).
 CFG = dict(patch_size=16, embed_dim=64, depth=4, num_heads=4,
