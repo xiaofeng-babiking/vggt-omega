@@ -48,3 +48,11 @@ def test_ring_even():
 
 def test_ring_uneven():
     _check(7, 3, [3, 2, 2])
+
+
+def test_ring_zero_frame_rank():
+    _check(2, 3, [1, 1, 0])
+
+
+def test_ring_distinct_lengths():
+    _check(6, 3, [3, 2, 1])
