@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrowData" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-end">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1565c0"/>
+    </marker>
+    <marker id="arrowWeb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-end">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/>
+    </marker>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="640" y="40" text-anchor="middle" font-size="26" font-weight="700" fill="#212121">
+    Rerun LAN Web-Viewer Topology &#8212; two ports, two jobs
+  </text>
+  <text x="640" y="66" text-anchor="middle" font-size="14" fill="#607d8b">
+    vggt_omega/datasets/adapters/rerun_adapter.py &#8212; serve a web viewer reachable by other users on the same LAN
+  </text>
+
+  <!-- key idea banner -->
+  <rect x="40" y="84" width="1200" height="40" rx="8" fill="#fffde7" stroke="#fbc02d" stroke-width="1.5"/>
+  <text x="640" y="110" text-anchor="middle" font-size="14.5" fill="#7a5c00">
+    <tspan font-weight="700">:9876 = DATA PLANE</tspan> (the hub; producer + every browser stream here)   &#160;&#8226;&#160;   <tspan font-weight="700">:9090 = APP DELIVERY</tspan> (hands the browser the viewer once; carries no data)
+  </text>
+
+  <!-- ===================== HOST MACHINE ===================== -->
+  <rect x="40" y="150" width="600" height="700" rx="14" fill="#eceff1" stroke="#90a4ae" stroke-width="2"/>
+  <text x="64" y="182" font-size="18" font-weight="700" fill="#37474f">Host machine</text>
+  <text x="64" y="204" font-size="13" fill="#607d8b">LAN IP e.g. 192.168.1.50 &#8212; bind 0.0.0.0; open ports 9876 AND 9090</text>
+
+  <!-- Data producer -->
+  <rect x="70" y="226" width="540" height="150" rx="10" fill="#ffffff" stroke="#5c6bc0" stroke-width="2" filter="url(#soft)"/>
+  <text x="90" y="252" font-size="16" font-weight="700" fill="#3949ab">Data producer (this adapter)</text>
+  <text x="90" y="276" font-size="13" fill="#37474f">python -m vggt_omega.datasets.adapters \</text>
+  <text x="90" y="296" font-size="13" fill="#37474f">&#160;&#160;&#160;--configure &lt;dataset&gt;.yaml --connect</text>
+  <text x="90" y="324" font-size="12.5" fill="#607d8b">RerunDataset / log_sample(): one RecordingStream per</text>
+  <text x="90" y="342" font-size="12.5" fill="#607d8b">sequence &#8594; rec.connect_grpc(...) pushes log data IN.</text>
+  <text x="90" y="364" font-size="12" font-style="italic" fill="#8e6e00">DEFAULT_GRPC_URL = rerun+http://127.0.0.1:9876/proxy</text>
+
+  <!-- rerun serve-web process -->
+  <rect x="70" y="430" width="540" height="390" rx="10" fill="#ffffff" stroke="#26a69a" stroke-width="2" filter="url(#soft)"/>
+  <text x="90" y="458" font-size="16" font-weight="700" fill="#00897b">rerun --serve-web  (one process, two servers)</text>
+  <text x="90" y="480" font-size="12.5" fill="#607d8b">$ rerun --serve-web</text>
+
+  <!-- gRPC proxy server = DATA PLANE -->
+  <rect x="100" y="500" width="480" height="170" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="2.2"/>
+  <text x="122" y="528" font-size="15" font-weight="700" fill="#1565c0">gRPC proxy  &#8212;  DATA PLANE / hub</text>
+  <rect x="470" y="510" width="92" height="28" rx="14" fill="#1565c0"/>
+  <text x="516" y="529" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">:9876</text>
+  <text x="122" y="552" font-size="12.5" fill="#37474f">Path /proxy. The ONE place data lives.</text>
+  <text x="122" y="574" font-size="12.5" fill="#37474f">&#8226; producer connects here to push frames IN</text>
+  <text x="122" y="594" font-size="12.5" fill="#37474f">&#8226; every browser viewer connects here to pull OUT</text>
+  <text x="122" y="614" font-size="12.5" fill="#37474f">&#8226; fans the same stream out to all viewers</text>
+  <text x="122" y="640" font-size="12" font-style="italic" fill="#607d8b">persistent connection &#183; the key middleware</text>
+  <text x="122" y="659" font-size="12" font-style="italic" fill="#607d8b">--serve = same proxy hosted in-process by the adapter</text>
+
+  <!-- web asset http server = APP DELIVERY -->
+  <rect x="100" y="686" width="480" height="116" rx="8" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2.2"/>
+  <text x="122" y="714" font-size="15" font-weight="700" fill="#2e7d32">Web-asset HTTP  &#8212;  APP DELIVERY</text>
+  <rect x="470" y="696" width="92" height="28" rx="14" fill="#2e7d32"/>
+  <text x="516" y="715" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">:9090</text>
+  <text x="122" y="738" font-size="12.5" fill="#37474f">Serves the WASM/HTML/JS Web Viewer bundle.</text>
+  <text x="122" y="758" font-size="12.5" fill="#37474f">Hit ONCE per browser at http://&lt;host&gt;:9090.</text>
+  <text x="122" y="780" font-size="12" font-style="italic" fill="#b71c1c">carries the app, NOT the data &#8212; zero frames flow here</text>
+
+  <!-- producer -> data plane (loopback) -->
+  <path d="M 250 376 L 250 500" fill="none" stroke="#1565c0" stroke-width="3" marker-end="url(#arrowData)"/>
+  <text x="262" y="428" font-size="12" font-weight="600" fill="#1565c0">data IN (gRPC)</text>
+  <text x="262" y="444" font-size="11" fill="#607d8b">loopback 127.0.0.1:9876/proxy</text>
+
+  <!-- ===================== LAN ===================== -->
+  <rect x="680" y="430" width="110" height="240" rx="55" fill="#fff8e1" stroke="#f9a825" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="735" y="540" text-anchor="middle" font-size="18" font-weight="700" fill="#f9a825">LAN</text>
+  <text x="735" y="562" text-anchor="middle" font-size="12" fill="#a17d00">switch /</text>
+  <text x="735" y="578" text-anchor="middle" font-size="12" fill="#a17d00">Wi-Fi</text>
+  <text x="735" y="604" text-anchor="middle" font-size="11" fill="#a17d00">192.168.1.0/24</text>
+
+  <!-- ===================== REMOTE USERS ===================== -->
+  <rect x="830" y="150" width="410" height="700" rx="14" fill="#f3e5f5" stroke="#ab47bc" stroke-width="2"/>
+  <text x="854" y="182" font-size="18" font-weight="700" fill="#6a1b9a">Other users on the LAN</text>
+  <text x="854" y="204" font-size="13" fill="#8e24aa">browser only &#8212; no Python, no rerun install</text>
+  <text x="854" y="228" font-size="12.5" font-weight="600" fill="#6a1b9a">Each browser makes TWO connections to the host:</text>
+
+  <!-- browser A (detailed, shows both connections) -->
+  <rect x="850" y="248" width="370" height="210" rx="10" fill="#ffffff" stroke="#8e24aa" stroke-width="1.8" filter="url(#soft)"/>
+  <rect x="850" y="248" width="370" height="28" rx="10" fill="#8e24aa"/>
+  <circle cx="866" cy="262" r="4" fill="#ff5252"/><circle cx="880" cy="262" r="4" fill="#ffca28"/><circle cx="894" cy="262" r="4" fill="#69f0ae"/>
+  <text x="1035" y="267" text-anchor="middle" font-size="12" fill="#ffffff">http://192.168.1.50:9090</text>
+  <text x="868" y="304" font-size="15" font-weight="700" fill="#6a1b9a">User A &#8212; Web Viewer</text>
+
+  <!-- step 1 chip -->
+  <circle cx="878" cy="332" r="11" fill="#2e7d32"/><text x="878" y="337" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">1</text>
+  <text x="898" y="330" font-size="12.5" font-weight="600" fill="#2e7d32">GET viewer app  &#8594; :9090  (HTTP, once)</text>
+  <text x="898" y="347" font-size="11.5" fill="#607d8b">downloads the program; then 9090 is done</text>
+
+  <!-- step 2 chip -->
+  <circle cx="878" cy="378" r="11" fill="#1565c0"/><text x="878" y="383" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">2</text>
+  <text x="898" y="376" font-size="12.5" font-weight="600" fill="#1565c0">stream data &#8594; :9876/proxy  (gRPC, persistent)</text>
+  <text x="898" y="393" font-size="11.5" fill="#607d8b">the loaded viewer dials back to the data plane</text>
+
+  <text x="868" y="430" font-size="12" fill="#37474f">3) live frames render in-browser</text>
+  <text x="868" y="448" font-size="11.5" font-style="italic" fill="#b71c1c">9090 alone is not enough &#8212; needs 9876 too</text>
+
+  <!-- browser B -->
+  <rect x="850" y="478" width="370" height="120" rx="10" fill="#ffffff" stroke="#8e24aa" stroke-width="1.8" filter="url(#soft)"/>
+  <rect x="850" y="478" width="370" height="28" rx="10" fill="#8e24aa"/>
+  <circle cx="866" cy="492" r="4" fill="#ff5252"/><circle cx="880" cy="492" r="4" fill="#ffca28"/><circle cx="894" cy="492" r="4" fill="#69f0ae"/>
+  <text x="1035" y="497" text-anchor="middle" font-size="12" fill="#ffffff">http://192.168.1.50:9090</text>
+  <text x="868" y="534" font-size="15" font-weight="700" fill="#6a1b9a">User B &#8212; Web Viewer</text>
+  <text x="868" y="558" font-size="12" fill="#607d8b">same two steps: app from :9090, data from :9876</text>
+  <text x="868" y="578" font-size="12" fill="#607d8b">the proxy fans the one stream out to each viewer</text>
+
+  <!-- browser C..N -->
+  <rect x="850" y="618" width="370" height="100" rx="10" fill="#ffffff" stroke="#8e24aa" stroke-width="1.8" filter="url(#soft)"/>
+  <rect x="850" y="618" width="370" height="28" rx="10" fill="#8e24aa"/>
+  <circle cx="866" cy="632" r="4" fill="#ff5252"/><circle cx="880" cy="632" r="4" fill="#ffca28"/><circle cx="894" cy="632" r="4" fill="#69f0ae"/>
+  <text x="1035" y="637" text-anchor="middle" font-size="12" fill="#ffffff">http://192.168.1.50:9090</text>
+  <text x="868" y="674" font-size="15" font-weight="700" fill="#6a1b9a">User C &#8230; N</text>
+  <text x="868" y="698" font-size="12" fill="#607d8b">any number of concurrent viewers</text>
+
+  <!-- ===================== CROSS-NETWORK ARROWS ===================== -->
+  <!-- 1: app delivery host :9090 -> LAN -> browsers (green, dashed = one-time) -->
+  <path d="M 580 730 C 640 720, 650 560, 680 540" fill="none" stroke="#2e7d32" stroke-width="2.6" stroke-dasharray="8 5" marker-end="url(#arrowWeb)"/>
+  <path d="M 790 520 C 818 440, 824 380, 850 350" fill="none" stroke="#2e7d32" stroke-width="2.6" stroke-dasharray="8 5" marker-end="url(#arrowWeb)"/>
+  <circle cx="612" cy="690" r="12" fill="#2e7d32"/><text x="612" y="695" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">1</text>
+  <text x="595" y="668" text-anchor="middle" font-size="12" font-weight="600" fill="#2e7d32">viewer app</text>
+  <text x="595" y="654" text-anchor="middle" font-size="11" fill="#558b2f">HTTP :9090 (once)</text>
+
+  <!-- 2: data plane browsers <-> LAN <-> host :9876 (blue, thick = persistent) -->
+  <path d="M 850 392 C 818 470, 808 500, 790 520" fill="none" stroke="#1565c0" stroke-width="3.4" marker-end="url(#arrowData)"/>
+  <path d="M 680 575 C 645 600, 615 605, 580 600" fill="none" stroke="#1565c0" stroke-width="3.4" marker-end="url(#arrowData)"/>
+  <circle cx="640" cy="640" r="12" fill="#1565c0"/><text x="640" y="645" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">2</text>
+  <text x="648" y="628" font-size="12" font-weight="600" fill="#1565c0">live data stream</text>
+  <text x="648" y="614" font-size="11" fill="#1976d2">gRPC :9876/proxy (persistent)</text>
+
+  <!-- ===================== LEGEND ===================== -->
+  <rect x="40" y="862" width="1200" height="34" rx="8" fill="#ffffff" stroke="#cfd8dc" stroke-width="1.2"/>
+  <line x1="60" y1="879" x2="98" y2="879" stroke="#1565c0" stroke-width="3.4" marker-end="url(#arrowData)"/>
+  <text x="106" y="883" font-size="12" fill="#37474f"><tspan font-weight="700" fill="#1565c0">:9876 data plane</tspan> &#8212; persistent gRPC; producer pushes in, all viewers pull out.</text>
+  <line x1="640" y1="879" x2="678" y2="879" stroke="#2e7d32" stroke-width="3" stroke-dasharray="8 5" marker-end="url(#arrowWeb)"/>
+  <text x="686" y="883" font-size="12" fill="#37474f"><tspan font-weight="700" fill="#2e7d32">:9090 app delivery</tspan> &#8212; one-time HTTP that ships the viewer; remote LAN access needs BOTH ports open.</text>
+</svg>
