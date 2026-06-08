@@ -30,7 +30,7 @@ def gather_pose_enc_to_rank0(pose_enc_local: torch.Tensor, group) -> torch.Tenso
     counts = [torch.zeros(1, dtype=torch.long, device=pose_enc_local.device) for _ in range(world)]
     dist.all_gather(counts, torch.tensor([n_local], dtype=torch.long, device=pose_enc_local.device), group=group)
     counts = [int(c.item()) for c in counts]
-    max_n = max(counts) if counts else 0
+    max_n = max(counts)
 
     dim = pose_enc_local.shape[-1]
     padded = pose_enc_local.new_zeros(1, max_n, dim)
