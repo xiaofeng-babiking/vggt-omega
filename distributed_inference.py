@@ -17,12 +17,10 @@ camera-pose (ATE/RPE) runs on rank 0 over the gathered trajectory.
 import json
 import os
 import sys
-import time
 
 import numpy as np
 import torch
 import torch.distributed as dist
-from tqdm import tqdm
 
 import gflags
 
