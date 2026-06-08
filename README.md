@@ -161,6 +161,25 @@ observed). The constants are calibrated for this 1B model with fp32 weights on a
 and shift with dtype, attention backend, or the alignment head enabled; the model
 covers memory only, not the `O(N²)` runtime.
 
+### Distributed inference (long sequences)
+
+For sequences too long for one GPU, shard frames across GPUs with the
+context-parallel entrypoint. Each rank embeds only its frames and the cross/global
+attention is computed across ranks, so both peak memory and the O((N·P)²)
+global-attention compute scale by 1/(number of GPUs). Results are mathematically
+equivalent to a single-GPU run.
+
+```bash
+torchrun --standalone --nproc_per_node=8 distributed_inference.py \
+  --configure vggt_omega/datasets/config/tum.yaml \
+  --checkpoint /path/to/vggt_omega_1b_512.pt \
+  --cp_strategy all_gather_kv   # or: ring  (for multi-node / very long sequences)
+```
+
+Depth/conf PNGs are written per-rank (filenames carry the global frame id),
+mono-depth metrics are reduced across ranks, and camera-pose (ATE/RPE) is scored
+on rank 0 over the gathered trajectory.
+
 ## License
 
 See the [LICENSE](./LICENSE) file for details about the license under which
