@@ -196,7 +196,7 @@ torchrun --nnodes=2 --nproc_per_node=8 \
   --rdzv_backend=c10d --rdzv_endpoint=$HEAD_NODE_IP:29500 \
   distributed_inference.py \
   --configure vggt_omega/datasets/config/tum.yaml \
-  --checkpoint /path/to/vggt_omega_1b_512.pt \
+  --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
   --cp_strategy ring
 ```
 
@@ -243,7 +243,7 @@ warmup pass), logs the rank-0 operator table, and writes one Chrome trace per ra
 ```bash
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
   --configure vggt_omega/datasets/config/tum.yaml \
-  --checkpoint /path/to/vggt_omega_1b_512.pt \
+  --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
   --cp_strategy all_gather_kv \
   --profile
 ```
@@ -284,7 +284,13 @@ or [perfetto.dev](https://ui.perfetto.dev) to see the gather ↔ attention timel
 (e.g. whether the K/V all-gather is serialized with compute). For a full multi-GPU
 system timeline, wrap the launch in
 [Nsight Systems](https://developer.nvidia.com/nsight-systems):
-`nsys profile -o cp_infer --trace=cuda,nvtx,osrt torchrun … distributed_inference.py …`.
+```bash
+nsys profile -o cp_infer --trace=cuda,nvtx,osrt \
+torchrun --standalone --nproc_per_node=8 distributed_inference.py \
+--configure vggt_omega/datasets/config/tum.yaml \
+--checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
+--cp_strategy all_gather_kv
+```.
 
 ## License
 
