@@ -161,24 +161,78 @@ observed). The constants are calibrated for this 1B model with fp32 weights on a
 and shift with dtype, attention backend, or the alignment head enabled; the model
 covers memory only, not the `O(N²)` runtime.
 
-### Distributed inference (long sequences)
+## Distributed Inference
 
-For sequences too long for one GPU, shard frames across GPUs with the
-context-parallel entrypoint. Each rank embeds only its frames and the cross/global
-attention is computed across ranks, so both peak memory and the O((N·P)²)
-global-attention compute scale by 1/(number of GPUs). Results are mathematically
-equivalent to a single-GPU run.
+`inference.py` runs a whole sequence on a single GPU, so the longest sequence it
+can handle is capped by the memory curve above (≈ 1069 frames at 640×480 on an
+80 GB GPU). For longer sequences, `distributed_inference.py` shards the frames
+across multiple GPUs with **context parallelism**: each rank embeds only its slice
+of the frames, and the cross-frame ("global") attention is computed jointly across
+ranks. Both the per-GPU activation memory and the `O((N·P)²)` global-attention
+compute are split across the GPUs — so beyond the fixed model floor (the weights,
+replicated on every rank), `G` GPUs run roughly `G×` longer sequences. The result
+is **mathematically equivalent** to a single-GPU run (only floating-point
+reduction order differs), and the released checkpoint is loaded unchanged.
+
+### Launch
+
+It mirrors `inference.py` — the same dataset-driven contract and the same
+`--configure` / `--checkpoint` / `--output_root` flags (frame count and resolution
+still come from the configure's `inference` block) — but it is started with
+`torchrun`, one rank per GPU, over the NCCL backend:
 
 ```bash
+# Single node, 8 GPUs
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
   --configure vggt_omega/datasets/config/tum.yaml \
   --checkpoint /path/to/vggt_omega_1b_512.pt \
-  --cp_strategy all_gather_kv   # or: ring  (for multi-node / very long sequences)
+  --output_root outputs \
+  --cp_strategy all_gather_kv
 ```
 
-Depth/conf PNGs are written per-rank (filenames carry the global frame id),
-mono-depth metrics are reduced across ranks, and camera-pose (ATE/RPE) is scored
-on rank 0 over the gathered trajectory.
+```bash
+# Multi-node (e.g. 2 nodes × 8 GPUs); run on every node with a shared rendezvous
+torchrun --nnodes=2 --nproc_per_node=8 \
+  --rdzv_backend=c10d --rdzv_endpoint=$HEAD_NODE_IP:29500 \
+  distributed_inference.py \
+  --configure vggt_omega/datasets/config/tum.yaml \
+  --checkpoint /path/to/vggt_omega_1b_512.pt \
+  --cp_strategy ring
+```
+
+The single-GPU `inference.py` is left unchanged; use it whenever a sequence
+already fits on one GPU.
+
+### Attention strategy (`--cp_strategy`)
+
+The cross-rank global attention has two interchangeable, numerically-exact
+implementations:
+
+| `--cp_strategy` | How it works | Best for |
+| :--- | :--- | :--- |
+| `all_gather_kv` (default) | All-gathers K/V to every rank, then computes local-query × global-KV attention | A single node — the gathered K/V ride the fast NVLink / NVSwitch links |
+| `ring` | Rotates K/V blocks around the ranks with online-softmax accumulation; never materializes the full K/V | Multiple nodes or extremely long sequences — minimal, overlap-friendly communication and the lowest per-rank memory |
+
+### What is communicated
+
+Frames live in the batch dimension, so the DINOv2 patch embedding, the per-frame
+attention blocks, and the entire dense depth/confidence head run **independently
+per rank with no communication**. The only cross-GPU exchange is the global/cross
+attention — the aggregator's inter-frame "global" and "register" blocks and the
+camera head's trunk — i.e. exactly the part that must mix information across all
+frames.
+
+### Outputs
+
+Results land under `--output_root/<sequence>/` as in single-GPU runs, written
+cooperatively across ranks:
+
+- **Depth / confidence PNGs** are written per rank, named by the **global** frame
+  index (`depth/frame_0000.png`, …), so the on-disk layout matches a single-GPU run.
+- **Point cloud** is written as one partial PLY per rank (`pointcloud_rank{r}.ply`).
+- **Metrics** (`metrics/metrics.json`, written by rank 0): mono-depth metrics
+  (Abs Rel / δ) are reduced across ranks (frame-count weighted), and camera-pose
+  ATE / RPE is scored on rank 0 over the trajectory gathered from every rank.
 
 ## License
 
