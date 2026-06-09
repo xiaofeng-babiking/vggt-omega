@@ -236,10 +236,9 @@ cooperatively across ranks:
 
 ### Profiling
 
-Pass `--profile` to profile the **first sequence's forward** with
-[`torch.profiler`](https://pytorch.org/docs/stable/profiler.html). After a warmup
-pass it logs the rank-0 operator table (sorted by CUDA time) and writes one
-Chrome trace per rank to `<output_root>/<sequence>/trace_rank{r}.json`:
+**Step 1 — run with `--profile`.** This profiles the **first sequence's forward**
+with [`torch.profiler`](https://pytorch.org/docs/stable/profiler.html) (after a
+warmup pass), logs the rank-0 operator table, and writes one Chrome trace per rank:
 
 ```bash
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
@@ -252,7 +251,20 @@ torchrun --standalone --nproc_per_node=8 distributed_inference.py \
 Tip: cap `num_frames` in the configure's `inference` block to a representative
 value (e.g. 128–256) so the trace stays small and the run finishes quickly.
 
-**Reading the op table.** The two rows that matter for context-parallel inference are:
+**Step 2 — collect the expected output.** A `--profile` run produces, for the
+first sequence (under `--output_root/<sequence_name>/`):
+
+- **One Chrome trace per rank**: `trace_rank0.json`, `trace_rank1.json`, …,
+  `trace_rank{G-1}.json`, where `G = --nproc_per_node`. Each is tens of MB (≈ 18 MB
+  at 256 frames on 8 GPUs). The ranks are frame-shards of the same forward, so any
+  one is representative; comparing them surfaces load imbalance from uneven shards.
+- **The rank-0 operator table** (sorted by CUDA time) printed to the log/stderr.
+
+Independently of `--profile`, **every** forward logs each rank's peak memory —
+`[rank r] N local frames | peak GPU mem X GB` — handy for capacity planning and
+the frames-per-GPU ceiling.
+
+**Step 3 — read the op table.** The two rows that matter for context-parallel inference are:
 
 - `nccl:all_gather` / `ncclDevKernel_AllGather…` — the cross-GPU **communication**
   (the per-block K/V exchange).
@@ -267,9 +279,11 @@ attention wall, which is inherent to exact global attention. (Ignore the high
 `aten::copy_` *CPU* percentage — that is the CPU blocking on the GPU, not real work;
 read the **Self CUDA** column.)
 
-Open a `trace_rank{r}.json` in `chrome://tracing` or [perfetto.dev](https://ui.perfetto.dev)
-to see the gather ↔ attention timeline. For a full multi-GPU system timeline,
-wrap the launch in [Nsight Systems](https://developer.nvidia.com/nsight-systems):
+**Step 4 — open the timeline.** Load any `trace_rank{r}.json` in `chrome://tracing`
+or [perfetto.dev](https://ui.perfetto.dev) to see the gather ↔ attention timeline
+(e.g. whether the K/V all-gather is serialized with compute). For a full multi-GPU
+system timeline, wrap the launch in
+[Nsight Systems](https://developer.nvidia.com/nsight-systems):
 `nsys profile -o cp_infer --trace=cuda,nvtx,osrt torchrun … distributed_inference.py …`.
 
 ## License
