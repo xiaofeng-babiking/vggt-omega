@@ -54,9 +54,14 @@ gflags.DEFINE_boolean(
 def run_local_inference(model, images, device):
     """Forward on the local frame shard; returns per-frame prediction arrays (numpy)."""
     images = images.contiguous().to(device)
+    torch.cuda.reset_peak_memory_stats()
     with torch.inference_mode():
         predictions = model(images)
     torch.cuda.synchronize()
+    logger.info(
+        f"[rank {dist.get_rank()}] {images.shape[1]} local frames | "
+        f"peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.2f} GB"
+    )
     extrinsics, intrinsics = encoding_to_camera(predictions["pose_enc"], predictions["images"].shape[-2:])
     return {
         "pose_enc": predictions["pose_enc"],  # tensor (1, n_local, 9) -- gathered later
