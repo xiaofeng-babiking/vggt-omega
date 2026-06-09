@@ -20,7 +20,7 @@ dataset:
       TUM_DIR: /jfs/guibiao/streamVGGT/data/eval/tum
       # Sequences to run, as names or glob patterns (e.g. "rgbd_dataset_freiburg3_*").
       # ["*"] = ALL sequences under TUM_DIR.
-      sequences: ["*"]
+      sequences: ["rgbd_dataset_freiburg3_walking_halfsphere"]
       len_train: 100000
       expand_ratio: 8
       assoc_max_diff: 0.02
@@ -66,7 +66,7 @@ common_config:
 # output/fusion knobs (output_root, conf_percentile, max_points) are CLI flags.
 inference:
   # Frames per sequence. <=0 = ALL frames; otherwise this many, evenly spaced and ordered.
-  num_frames: 720
+  num_frames: -1
   # Resolution scale factor. 1.0 = the dataset's native long side; the effective
   # long side is round(native_long * image_scale) snapped to a multiple of 16.
   image_scale: 1.0
