@@ -13,19 +13,19 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from .process_group import all_gather_ints
-from .shard import key_keep_mask, pad_seq_to
+from .shard import pad_seq_to
 
 
 class DistributedAttention(Protocol):
     def __call__(self, q, k, v, cp_group) -> torch.Tensor: ...
 
 
-def _all_gather_concat_seq(x_padded: torch.Tensor, cp_group) -> torch.Tensor:
-    """All-gather equal-shaped (B,H,max_len,D) tensors and concat along seq -> (B,H,world*max_len,D)."""
+def _all_gather_blocks(x_padded: torch.Tensor, cp_group) -> list[torch.Tensor]:
+    """All-gather equal-shaped (B,H,max_len,D) tensors -> list of the `world` rank blocks."""
     world = dist.get_world_size(cp_group)
     out = [torch.empty_like(x_padded) for _ in range(world)]
     dist.all_gather(out, x_padded.contiguous(), group=cp_group)
-    return torch.cat(out, dim=2)
+    return out
 
 
 class AllGatherKVAttention:
@@ -36,15 +36,18 @@ class AllGatherKVAttention:
         max_len = max(lengths) if lengths else 0
         if max_len == 0:
             return q  # everything empty; preserves shape (B,H,0,D)
-        k_full = _all_gather_concat_seq(pad_seq_to(k, max_len, dim=2), cp_group)
-        v_full = _all_gather_concat_seq(pad_seq_to(v, max_len, dim=2), cp_group)
-        # Only mask when shards are uneven (padding present). With equal-length
-        # shards there is no padding, so we drop the mask -> SDPA can use the
-        # FlashAttention kernel (~3x faster); a non-null attn_mask disables Flash.
-        mask = None
-        if any(length != max_len for length in lengths):
-            mask = key_keep_mask(lengths, max_len, device=q.device)  # (1,1,1,world*max_len) bool
-        return F.scaled_dot_product_attention(q, k_full, v_full, attn_mask=mask)
+        # Variable-length all-gather, emulated as pad -> all_gather -> TRIM:
+        # all_gather needs equal shapes, so we pad each rank's K/V to max_len,
+        # gather, then drop each rank's padding and concatenate into the real,
+        # contiguous global K/V. Because no padded keys remain we pass NO attn_mask,
+        # so SDPA uses FlashAttention even when shards are uneven (a non-null mask
+        # forces the ~3x-slower memory-efficient kernel). Exact: global attention
+        # has no cross-frame positional encoding, so this equals masked-padded SDPA.
+        k_blocks = _all_gather_blocks(pad_seq_to(k, max_len, dim=2), cp_group)
+        v_blocks = _all_gather_blocks(pad_seq_to(v, max_len, dim=2), cp_group)
+        k_full = torch.cat([blk[:, :, :n] for blk, n in zip(k_blocks, lengths)], dim=2)
+        v_full = torch.cat([blk[:, :, :n] for blk, n in zip(v_blocks, lengths)], dim=2)
+        return F.scaled_dot_product_attention(q, k_full, v_full)
 
 
 def _ring_exchange(send: torch.Tensor, recv_shape, cp_group, rank, world) -> torch.Tensor:
