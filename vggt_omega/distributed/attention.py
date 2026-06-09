@@ -38,7 +38,12 @@ class AllGatherKVAttention:
             return q  # everything empty; preserves shape (B,H,0,D)
         k_full = _all_gather_concat_seq(pad_seq_to(k, max_len, dim=2), cp_group)
         v_full = _all_gather_concat_seq(pad_seq_to(v, max_len, dim=2), cp_group)
-        mask = key_keep_mask(lengths, max_len, device=q.device)  # (1,1,1,world*max_len) bool
+        # Only mask when shards are uneven (padding present). With equal-length
+        # shards there is no padding, so we drop the mask -> SDPA can use the
+        # FlashAttention kernel (~3x faster); a non-null attn_mask disables Flash.
+        mask = None
+        if any(length != max_len for length in lengths):
+            mask = key_keep_mask(lengths, max_len, device=q.device)  # (1,1,1,world*max_len) bool
         return F.scaled_dot_product_attention(q, k_full, v_full, attn_mask=mask)
 
 
