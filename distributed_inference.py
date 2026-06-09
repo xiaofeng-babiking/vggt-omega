@@ -17,10 +17,12 @@ camera-pose (ATE/RPE) runs on rank 0 over the gathered trajectory.
 import json
 import os
 import sys
+from contextlib import nullcontext
 
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.profiler import ProfilerActivity, profile
 
 import gflags
 
@@ -41,6 +43,11 @@ logger = get_logger("vggt_omega.distributed_inference")
 gflags.DEFINE_string(
     "cp_strategy", "all_gather_kv",
     "Distributed global-attention strategy: 'all_gather_kv' (single-node) or 'ring' (multi-node).",
+)
+gflags.DEFINE_boolean(
+    "profile", False,
+    "Profile the first sequence's forward with torch.profiler: log the rank-0 op "
+    "table (by CUDA time) and write a per-rank chrome trace (trace_rank{r}.json).",
 )
 
 
@@ -145,8 +152,26 @@ def main():
         else:
             images = torch.zeros(1, 0, 3, height, width)         # empty shard, correct H/W
 
-        pred = run_local_inference(model, images, device)
         output_dir = os.path.join(FLAGS.output_root, seq_name)
+
+        # --profile: time the first sequence's forward. Warm up once (cudnn autotune
+        # / allocator) so the trace is representative, then profile. Both the warmup
+        # and profiled forward run on EVERY rank (the model forward issues
+        # collectives) to stay rank-symmetric and avoid deadlock.
+        do_profile = FLAGS.profile and seq_index == 0
+        if do_profile:
+            run_local_inference(model, images, device)  # warmup (all ranks)
+        prof_ctx = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if do_profile else nullcontext()
+        with prof_ctx as prof:
+            pred = run_local_inference(model, images, device)
+        if do_profile:
+            if rank == 0:
+                logger.info(
+                    "profiler top ops (rank 0, by CUDA time):\n"
+                    + prof.key_averages().table(sort_by="cuda_time_total", row_limit=25)
+                )
+            os.makedirs(output_dir, exist_ok=True)
+            prof.export_chrome_trace(os.path.join(output_dir, f"trace_rank{rank}.json"))
 
         if len(local_ids):
             dump_local_shard(output_dir, local_ids, frame_index_offset, pred,
