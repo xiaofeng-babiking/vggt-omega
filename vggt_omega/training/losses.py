@@ -1,6 +1,7 @@
 import torch
 
 from vggt_omega.utils.geometry import closed_form_inverse_se3
+from vggt_omega.utils.pose_enc import encoding_to_camera
 
 
 def normalize_gt_into_first_camera(extrinsics, depths, world_points, point_masks, eps=1e-6):
@@ -57,3 +58,41 @@ def unproject_depth(depth, extrinsics, intrinsics):
     R, t = extrinsics[..., :3], extrinsics[..., 3]
     world = torch.einsum("bsji,bspj->bspi", R, cam - t[:, :, None])
     return world.reshape(B, S, H, W, 3)
+
+
+def camera_loss(pred_pose_enc, gt_pose_enc):
+    """L1 over the 9-D pose encoding, mean over (B, S). GT must come from
+    normalized (first-camera-anchored) extrinsics."""
+    return (pred_pose_enc - gt_pose_enc).abs().mean()
+
+
+def _masked_mean(x, mask):
+    return (x * mask).sum() / mask.sum().clamp(min=1)
+
+
+def _aleatoric_terms(err_abs, conf, gt_depth, valid, alpha, depth_clamp=1e-3):
+    """Shared paper form: c*(1+1/D)*|e| + c*|grad e| - alpha*log c, masked means.
+
+    err_abs (B,S,H,W) = |residual| (pre-summed over channels for points),
+    conf (B,S,H,W), gt_depth (B,S,H,W) in NORMALIZED units, valid (B,S,H,W) bool.
+    """
+    w = 1.0 + 1.0 / gt_depth.clamp(min=depth_clamp)
+    data = _masked_mean(conf * w * err_abs, valid)
+    gx = (err_abs[..., :, 1:] - err_abs[..., :, :-1]).abs()
+    mx = valid[..., :, 1:] & valid[..., :, :-1]
+    gy = (err_abs[..., 1:, :] - err_abs[..., :-1, :]).abs()
+    my = valid[..., 1:, :] & valid[..., :-1, :]
+    grad = _masked_mean(conf[..., :, :-1] * gx, mx) + _masked_mean(conf[..., :-1, :] * gy, my)
+    reg = -alpha * _masked_mean(torch.log(conf.clamp(min=1e-6)), valid)
+    return data + grad + reg
+
+
+def depth_loss(pred_depth, conf, gt_depth, valid, alpha=0.2):
+    return _aleatoric_terms((pred_depth - gt_depth).abs(), conf, gt_depth, valid, alpha)
+
+
+def point_loss(pred_depth, conf, pred_pose_enc, gt_points, gt_depth, valid, image_size_hw, alpha=0.2):
+    ext, K = encoding_to_camera(pred_pose_enc, image_size_hw, build_intrinsics=True)
+    pred_points = unproject_depth(pred_depth, ext, K)
+    err = (pred_points - gt_points).abs().sum(dim=-1)
+    return _aleatoric_terms(err, conf, gt_depth, valid, alpha)
