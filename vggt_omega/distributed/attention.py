@@ -84,13 +84,15 @@ def _block_attn_manual(q, k, v, scale, key_chunk=_MANUAL_KEY_CHUNK):
 
 
 def _block_attn_flash(q, k, v, scale):
-    """One K/V block via the FlashAttention kernel. Returns (out fp32, lse fp32).
+    """One K/V block via the FlashAttention kernel. Returns (out, lse fp32).
 
     The aten op (unlike F.scaled_dot_product_attention) exposes the log-sum-exp
-    needed to merge blocks exactly. CUDA fp16/bf16 only.
+    needed to merge blocks exactly. CUDA fp16/bf16 on sm80+ only. `out` stays
+    in the kernel dtype: _merge_block's fp32 weights promote the product to
+    fp32 bit-identically, so upcasting here would only materialize an extra
+    full-size fp32 copy per ring step.
     """
-    out, lse = torch.ops.aten._scaled_dot_product_flash_attention(q, k, v, scale=scale)[:2]
-    return out.float(), lse
+    return torch.ops.aten._scaled_dot_product_flash_attention(q, k, v, scale=scale)[:2]
 
 
 def _merge_block(out_acc, lse_acc, o_blk, lse_blk):
@@ -166,6 +168,7 @@ class RingAttention:
         use_flash = (
             q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
             and Dh % 8 == 0 and Dh <= 256
+            and torch.cuda.get_device_capability(q.device)[0] >= 8  # flash kernel needs sm80+
         )
         block_attn = _block_attn_flash if use_flash else _block_attn_manual
 

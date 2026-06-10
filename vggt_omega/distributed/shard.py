@@ -24,16 +24,3 @@ def pad_seq_to(x: torch.Tensor, target_len: int, dim: int) -> torch.Tensor:
     pad_shape = list(x.shape)
     pad_shape[dim] = pad_amt
     return torch.cat([x, x.new_zeros(pad_shape)], dim=dim)
-
-
-def key_keep_mask(lengths: list[int], max_len: int, device) -> torch.Tensor:
-    """Boolean SDPA key mask over gathered (padded) keys.
-
-    True = real key, False = padded. Shape (1, 1, 1, world*max_len) to broadcast
-    over batch, heads, and query rows.
-    """
-    world = len(lengths)
-    keep = torch.zeros(world, max_len, dtype=torch.bool, device=device)
-    for r, length in enumerate(lengths):
-        keep[r, :length] = True
-    return keep.reshape(1, 1, 1, world * max_len)
