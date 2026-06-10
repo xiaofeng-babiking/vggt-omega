@@ -17,6 +17,7 @@ from .dataset_util import *
 from .track_util import *
 from .augmentation import get_image_augmentation
 from .modality import carry_extra_modalities
+from .parallel_loader import parallel_get_data
 
 
 class ComposedDataset(Dataset, ABC):
@@ -109,6 +110,13 @@ class ComposedDataset(Dataset, ABC):
         batch = self.base_dataset[idx_tuple]
         return self._tensorize(batch)
 
+    @staticmethod
+    def _stacked(value):
+        """A per-frame modality as one ``(V, ...)`` array: lists of per-frame
+        arrays are stacked; pre-stacked arrays (from the parallel inference
+        loader) pass through unchanged."""
+        return value if isinstance(value, np.ndarray) else np.stack(value)
+
     def _tensorize(self, batch):
         """Convert a raw numpy batch (from a vendor's ``get_data``) into the
         training tensor sample dict: images normalized to ``(V,3,H,W)`` in
@@ -121,18 +129,22 @@ class ComposedDataset(Dataset, ABC):
         seq_name = batch["seq_name"]
 
         # --- Data Conversion and Preparation ---
-        # Convert numpy arrays to tensors
-        images = torch.from_numpy(np.stack(batch["images"]).astype(np.float32)).contiguous()
+        # Convert numpy arrays to tensors. _stacked passes the parallel loader's
+        # pre-stacked (V, ...) arrays through without re-copying; astype with
+        # copy=False likewise skips the copy when the dtype already matches.
+        # Images stay uint8 through the stack and convert on the torch side
+        # (multithreaded, value-identical to converting in numpy first).
+        images = torch.from_numpy(self._stacked(batch["images"])).contiguous()
         # Normalize images from [0, 255] to [0, 1]
         images = images.permute(0,3,1,2).to(torch.get_default_dtype()).div(255)
 
         # Convert other data to tensors with appropriate types
-        depths = torch.from_numpy(np.stack(batch["depths"]).astype(np.float32))
-        extrinsics = torch.from_numpy(np.stack(batch["extrinsics"]).astype(np.float32))
-        intrinsics = torch.from_numpy(np.stack(batch["intrinsics"]).astype(np.float32))
-        cam_points = torch.from_numpy(np.stack(batch["cam_points"]).astype(np.float32))
-        world_points = torch.from_numpy(np.stack(batch["world_points"]).astype(np.float32))
-        point_masks = torch.from_numpy(np.stack(batch["point_masks"])) # Mask indicating valid depths / world points / cam points per frame
+        depths = torch.from_numpy(self._stacked(batch["depths"]).astype(np.float32, copy=False))
+        extrinsics = torch.from_numpy(self._stacked(batch["extrinsics"]).astype(np.float32, copy=False))
+        intrinsics = torch.from_numpy(self._stacked(batch["intrinsics"]).astype(np.float32, copy=False))
+        cam_points = torch.from_numpy(self._stacked(batch["cam_points"]).astype(np.float32, copy=False))
+        world_points = torch.from_numpy(self._stacked(batch["world_points"]).astype(np.float32, copy=False))
+        point_masks = torch.from_numpy(self._stacked(batch["point_masks"])) # Mask indicating valid depths / world points / cam points per frame
         ids = torch.from_numpy(batch["ids"])    # Frame indices sampled from the original sequence
 
 
@@ -164,8 +176,8 @@ class ComposedDataset(Dataset, ABC):
         if self.load_track:
             if batch["tracks"] is not None:
                 # Use pre-computed tracks from the dataset
-                tracks = torch.from_numpy(np.stack(batch["tracks"]).astype(np.float32))
-                track_vis_mask = torch.from_numpy(np.stack(batch["track_masks"]).astype(bool))
+                tracks = torch.from_numpy(self._stacked(batch["tracks"]).astype(np.float32, copy=False))
+                track_vis_mask = torch.from_numpy(self._stacked(batch["track_masks"]).astype(bool, copy=False))
 
                 # Sample a subset of tracks randomly
                 valid_indices = torch.where(track_vis_mask[0])[0]
@@ -236,15 +248,20 @@ class ComposedDataset(Dataset, ABC):
         vendor, local_idx, _ = self.sequence_index[seq_index]
         return vendor.sequence_num_frames(local_idx)
 
-    def get_sample(self, seq_index, ids, aspect_ratio=1.0):
+    def get_sample(self, seq_index, ids, aspect_ratio=1.0, num_workers=None):
         """Tensorized sample for EXPLICIT, ordered frame ``ids`` of one sequence --
         the training-identical inference path. Reuses ``_tensorize`` verbatim.
         Passing ``seq_name`` (not ``seq_index``) to the vendor sidesteps its
         ``inside_random`` remap, so the result is deterministic regardless of config.
+
+        Frames load through :func:`parallel_get_data`: the ids are split into
+        chunks fetched by concurrent ``get_data`` calls (bit-identical to one
+        serial call -- the eval path is deterministic and per-frame independent).
+        ``num_workers``: None = auto (cores / local ranks), <=1 = serial.
         """
         vendor, _, name = self.sequence_index[seq_index]
-        batch = vendor.get_data(
-            seq_name=name, ids=np.asarray(ids), aspect_ratio=aspect_ratio
+        batch = parallel_get_data(
+            vendor, name, np.asarray(ids), aspect_ratio=aspect_ratio, num_workers=num_workers
         )
         return self._tensorize(batch)
 
