@@ -13,6 +13,7 @@ import torch
 import logging
 
 from vggt_omega.utils.geometry import *
+from vggt_omega.utils.geometry import sampson_epipolar_distance
 
 
 
@@ -196,8 +197,6 @@ def sample_positive_tracks(tracks, tracks_mask, track_num, half_top = True, seq_
 #  Only for Debugging and Visualization
 
 def track_epipolar_check(tracks, extrinsics, intrinsics, use_essential_mat = False):
-    from kornia.geometry.epipolar import sampson_epipolar_distance
-
     B, T, _ = tracks.shape
     essential_mats = get_essential_matrix(extrinsics[0:1].expand(B-1, -1, -1), extrinsics[1:])
 
