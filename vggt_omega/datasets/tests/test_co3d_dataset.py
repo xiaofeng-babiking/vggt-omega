@@ -467,3 +467,25 @@ def test_composed_dataset_resamples_real_corrupt_co3d_fetch():
     assert calls["n"] == 2
     assert sample["images"].shape == (4, 3, sample["images"].shape[2], sample["images"].shape[3])
     assert sample["seq_name"].startswith("co3d")
+
+
+@pytest.mark.skipif(not HAVE_BAD_NPZ, reason="corrupt co3d frame absent (data cleaned?)")
+def test_composed_dataset_eval_mode_stays_strict_on_corrupt_fetch():
+    """Eval/inference paths must NOT mask dirty data: in eval mode the same
+    corrupt-frame ValueError propagates instead of being resampled."""
+    from hydra.utils import instantiate
+
+    common = OmegaConf.merge(_eval_common(), OmegaConf.create({"fetch_retries": 3}))
+    ds = instantiate(
+        OmegaConf.create(_co3d_dataset_cfg(seqs=[SEQ, SEQ2], n=10)),
+        common_config=common,
+        _recursive_=False,
+    )
+    vendor = ds.base_dataset.datasets[0]
+
+    def dirty_fetch(*args, **kwargs):
+        Co3dDataset.read_co3d_frame_meta(BAD_NPZ)
+
+    vendor.get_data = dirty_fetch
+    with pytest.raises(ValueError, match="bad maximum_depth"):
+        ds[(0, 4, 1.0)]

@@ -3,7 +3,6 @@ import torch
 
 from vggt_omega.utils.geometry import project_world_points_to_cam, cam_from_img, sampson_epipolar_distance
 from vggt_omega.datasets.composed_dataset import ComposedDataset
-from vggt_omega.datasets.modality import Modality
 from vggt_omega.datasets.track_util import build_tracks_by_depth, track_epipolar_check
 
 
@@ -136,65 +135,3 @@ def test_build_tracks_unfilled_slots_are_out_of_bounds():
                                              neg_epipolar_thres=1e12)
     assert (~pos).any()
     assert (tracks[:, ~pos] < 0).all()
-
-
-class _FlakyBase:
-    """Stub base dataset: raises on the first fetch, succeeds afterwards."""
-
-    def __init__(self, batch):
-        self.batch = batch
-        self.calls = 0
-
-    def __getitem__(self, idx_tuple):
-        self.calls += 1
-        if self.calls == 1:
-            raise ValueError("corrupt npz (synthetic)")
-        return self.batch
-
-
-def _stub_composed(training, batch):
-    ds = object.__new__(ComposedDataset)
-    ds.fixed_num_images = -1
-    ds.training = training
-    ds.fetch_retries = 3
-    ds.load_track = False
-    ds.base_dataset = _FlakyBase(batch)
-    ds.image_aug = None
-    ds.cojitter = False
-    ds.cojitter_ratio = 0.0
-    return ds
-
-
-def _minimal_raw_batch():
-    H = W = 32
-    img = np.zeros((H, W, 3), dtype=np.uint8)
-    depth = np.ones((H, W), dtype=np.float32)
-    ext = np.eye(4, dtype=np.float32)[:3]
-    K = np.array([[50.0, 0, 16], [0, 50.0, 16], [0, 0, 1]], dtype=np.float32)
-    pts = np.zeros((H, W, 3), dtype=np.float32)
-    return {
-        "seq_name": "stub_seq",
-        "ids": np.array([0, 1]),
-        "images": [img, img],
-        "depths": [depth, depth],
-        "extrinsics": [ext, ext],
-        "intrinsics": [K, K],
-        "cam_points": [pts, pts],
-        "world_points": [pts, pts],
-        "point_masks": [depth > 0, depth > 0],
-        "modalities": [Modality.IMAGE, Modality.DEPTH],
-    }
-
-
-def test_getitem_resamples_on_dirty_fetch_when_training():
-    ds = _stub_composed(training=True, batch=_minimal_raw_batch())
-    sample = ds[(0, 2, 1.0)]
-    assert ds.base_dataset.calls == 2          # failed once, resampled once
-    assert sample["images"].shape[0] == 2
-
-
-def test_getitem_stays_strict_in_eval():
-    import pytest
-    ds = _stub_composed(training=False, batch=_minimal_raw_batch())
-    with pytest.raises(ValueError, match="corrupt npz"):
-        ds[(0, 2, 1.0)]

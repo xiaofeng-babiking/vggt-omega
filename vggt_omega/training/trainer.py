@@ -166,6 +166,9 @@ class Trainer:
         val_interval = int(OmegaConf.select(self.cfg, "run.val_interval", default=0) or 0)
         ckpt_interval = int(cfg_run.ckpt_interval)
 
+        if bool(OmegaConf.select(self.cfg, "run.val_at_start", default=False)) and val_interval:
+            self._validate(self.global_step)  # pretrained / resume baseline
+
         self.model.train()
         while self.global_step < max_steps:
             loader = self.data.get_loader(self._epoch)
