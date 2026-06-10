@@ -1,0 +1,243 @@
+# Full supervised-training recipe (arXiv 2605.15195 Sec. 4.1 / A.1):
+# 16-vendor mixture, four-term loss, AdamW warmup-cosine, bf16 (inside the
+# model), gradient checkpointing.
+#
+#   .venv/bin/torchrun --standalone --nproc_per_node=8 train.py \
+#       --config vggt_omega/training/config/train_default.yaml
+#
+# Paper deviations to know about:
+# - img_nums [1, 24] per paper Sec. 4.1 (variable frames per sample).
+# - peak lr 2e-4 was tuned for the paper's 128-GPU global batch; scale it
+#   down (e.g. linearly with GPU count) for small runs.
+
+run:
+  output_dir: outputs/train_default   # train.py overrides with --out_root/--run_name
+  max_steps: 160000
+  log_interval: 50
+  img_log_interval: 1000
+  val_interval: 2000
+  ckpt_interval: 2000
+  keep_last: 3
+  seed: 42
+
+optim:
+  lr: 2.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  warmup_frac: 0.05
+  grad_clip: 1.0
+
+loss:
+  weights: {camera: 5.0, depth: 1.0, point: 0.5, match: 0.1}
+  alpha: 0.2
+  temperature: 1.0
+
+model:
+  embed_dim: 1024
+  patch_size: 16
+  checkpoint: /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt
+  gradient_checkpointing: true
+
+val:
+  configures:
+    - vggt_omega/datasets/config/tum.yaml
+    - vggt_omega/datasets/config/sintel.yaml
+  num_frames: 10
+  max_sequences: 2
+
+data:
+  train:
+    _target_: vggt_omega.datasets.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 8
+    max_img_per_gpu: 24
+    shuffle: false          # use inside_random to avoid large-dict shuffle OOM
+    pin_memory: false
+    common_config:
+      img_size: 512
+      patch_size: 16
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: true
+      track_num: 1024
+      track_neg_ratio: 0.5
+      training: true
+      inside_random: true
+      rescale: true
+      rescale_aug: true
+      landscape_check: false
+      debug: false
+      get_nearby: true
+      load_depth: true
+      img_nums: [1, 24]
+      max_img_per_gpu: 24
+      allow_duplicate_img: true
+      repeat_batch: false
+      augs:
+        cojitter: true
+        cojitter_ratio: 0.3
+        scales: [0.8, 1.2]
+        aspects: [0.33, 1.0]
+        color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+        gray_scale: true
+        gau_blur: false
+    dataset:
+      _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
+      # All 16 train vendors, full-sequence wildcards. Machine-specific *_DIR
+      # paths — override for your environment. blendedmvs / mvs_synth read EXR
+      # depth: launch with OPENCV_IO_ENABLE_OPENEXR=1.
+      dataset_configs:
+        - _target_: vggt_omega.datasets.vendors.arkitscenes.ArkitScenesDataset
+          split: train
+          ARKITSCENES_DIR: /jfs/Data_4DFF/train_data/arkitscenes
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          depth_scale: 1000.0
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.blendedmvs.BlendedMvsDataset
+          split: train
+          BLENDEDMVS_DIR: /jfs/Data_4DFF/train_data/blendedmvs
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.co3d.Co3dDataset
+          split: train
+          CO3D_DIR: /jfs/Data_4DFF/train_data/co3d
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.dl3dv.Dl3dvDataset
+          split: train
+          DL3DV_DIR: /jfs/Data_4DFF/train_data/dl3dv
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.dynamic_replica.DynamicReplicaDataset
+          split: train
+          DYNAMIC_REPLICA_DIR: /jfs/Data_4DFF/train_data/dynamic_replica_data
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          cameras: ["left", "right"]
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.hypersim.HypersimDataset
+          split: train
+          HYPERSIM_DIR: /jfs/Data_4DFF/train_data/hypersim
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          enum_workers: 32
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.megadepth.MegaDepthDataset
+          split: train
+          MEGADEPTH_DIR: /jfs/Data_4DFF/train_data/megadepth
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          min_depth_unique: 5
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.mvs_synth.MvsSynthDataset
+          split: train
+          MVS_SYNTH_DIR: /jfs/Data_4DFF/train_data/mvs_synth
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.omniobject3d.OmniObject3dDataset
+          split: train
+          OMNIOBJECT3D_DIR: /jfs/Data_4DFF/train_data/omniobject3d
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.pointodyssey.PointOdysseyDataset
+          split: train
+          POINTODYSSEY_DIR: /jfs/Data_4DFF/train_data/pointodyssey
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.scannet.ScannetDataset
+          split: train
+          SCANNET_DIR: /jfs/Data_4DFF/train_data/scannet
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          depth_scale: 1000.0
+          frame_step: 1
+          intrinsics: null
+          scans_subdir: scans_train
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.spring.SpringDataset
+          split: train
+          SPRING_DIR: /jfs/Data_4DFF/train_data/spring
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.tartanair.TartanAirDataset
+          split: train
+          TARTANAIR_DIR: /jfs/Data_4DFF/train_data/tartanair
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          valid_max: 1000.0
+          sky_threshold: 10000.0
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.vkitti.VkittiDataset
+          split: train
+          VKITTI_DIR: /jfs/Data_4DFF/train_data/vkitti
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          depth_scale: 100.0
+          intrinsics: null
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.waymo.WaymoDataset
+          split: train
+          WAYMO_DIR: /jfs/Data_4DFF/train_data/waymo
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          cameras: [1, 2, 3, 4, 5]
+          intrinsics: null
+          use_blacklist: false
+          min_num_images: 24
+        - _target_: vggt_omega.datasets.vendors.wildrgbd.WildRgbdDataset
+          split: train
+          WILDRGBD_DIR: /jfs/Data_4DFF/train_data/wildrgbd
+          sequences: ["*"]
+          len_train: 100000
+          len_test: 10000
+          expand_ratio: 8
+          depth_scale: 1000.0
+          intrinsics: null
+          min_num_images: 24
