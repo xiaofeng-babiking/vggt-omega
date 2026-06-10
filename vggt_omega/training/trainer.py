@@ -144,9 +144,12 @@ class Trainer:
             return
         # DynamicDistributedSampler needs an initialized process group even at world=1.
         if not dist.is_initialized():
+            store_path = os.path.join(os.path.abspath(self.out_dir), ".dist_init")
+            if os.path.exists(store_path):
+                os.remove(store_path)  # stale rendezvous file from a previous run hangs the store
             dist.init_process_group(
                 backend="gloo",
-                init_method=f"file://{os.path.join(os.path.abspath(self.out_dir), '.dist_init')}",
+                init_method=f"file://{store_path}",
                 rank=0,
                 world_size=1,
             )
@@ -191,6 +194,9 @@ class Trainer:
             self._epoch += 1
         if self.writer is not None:
             self.writer.flush()
+        if dist.is_initialized():
+            dist.barrier()
+            dist.destroy_process_group()
 
     def _to_device(self, batch):
         return {

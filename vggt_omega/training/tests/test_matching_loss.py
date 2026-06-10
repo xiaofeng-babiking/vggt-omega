@@ -127,3 +127,13 @@ def test_train_loss_computer_zero_match_without_tracks():
     out = computer(predictions, batch, image_size_hw=(H, W))
     assert out["match"].item() == 0.0
     assert torch.isfinite(out["total"])
+
+
+def test_matching_loss_sentinel_tracks_make_no_negative_pairs():
+    # Unfilled track slots carry the -1 out-of-bounds sentinel; they must not
+    # contribute negative pairs (the pre-fix zero coords aliased patch (0, 0)).
+    tok, _, vis, _ = _separable_setup()
+    sentinel = torch.full((1, 2, 2, 2), -1.0)
+    l = matching_loss(tok, sentinel, torch.zeros_like(vis),
+                      torch.zeros(1, 2, dtype=torch.bool), 16, (64, 64))
+    assert l.item() == 0.0

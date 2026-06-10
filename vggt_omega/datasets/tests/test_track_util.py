@@ -113,3 +113,25 @@ def test_tensorize_builds_tracks_when_vendor_has_none():
     assert sample["track_positive_mask"].shape == (64,)
     # neg_ratio plumbed through: 64 - int(64 * 0.25) positive slots
     assert sample["track_positive_mask"].sum() == 48
+
+
+def test_build_tracks_unfilled_slots_are_out_of_bounds():
+    # When no negatives survive the epipolar check, leftover slots must NOT
+    # alias pixel (0, 0) — zeros would create false negative pairs at the
+    # top-left patch in a matching loss that selects negatives by in-bounds coords.
+    E, K = _two_cam_scene()
+    E[1, 0, 3] = -0.1
+    H = W = 64
+    vs, us = torch.meshgrid(torch.arange(H, dtype=torch.float32), torch.arange(W, dtype=torch.float32), indexing="ij")
+    z = torch.full((H, W), 2.0)
+    x = (us - 32) / 100 * z; y = (vs - 32) / 100 * z
+    wp0 = torch.stack([x, y, z], -1)
+    world_points = torch.stack([wp0, wp0.clone()])
+    depths = torch.stack([z, z + 0.0])
+    masks = torch.ones(2, H, W, dtype=torch.bool)
+    images = torch.zeros(2, 3, H, W)
+    tracks, vis, pos = build_tracks_by_depth(E, K, world_points, depths, masks, images,
+                                             target_track_num=128, neg_ratio=0.5,
+                                             neg_epipolar_thres=1e12)
+    assert (~pos).any()
+    assert (tracks[:, ~pos] < 0).all()

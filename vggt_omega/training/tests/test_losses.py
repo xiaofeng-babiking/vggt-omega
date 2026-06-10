@@ -90,3 +90,15 @@ def test_point_loss_penalizes_wrong_pose(scene):
         n_dep, torch.ones_like(n_dep), bad, n_wp, n_dep, valid, (SCENE_H, SCENE_W)
     )
     assert l > 0.01
+
+
+def test_depth_loss_gradient_term_sees_sign_flips():
+    # e = [+1, -1] on adjacent pixels: |grad e| = 2 but grad|e| = 0 — the loss
+    # must differentiate the signed residual (paper: c * grad(e), e = pred - gt).
+    gt = torch.full((1, 1, 1, 2), 5.0)
+    pred = gt + torch.tensor([1.0, -1.0]).view(1, 1, 1, 2)
+    conf = torch.ones_like(gt)
+    valid = torch.ones_like(gt, dtype=torch.bool)
+    loss = depth_loss(pred, conf, gt, valid, alpha=0.0)
+    # data term: mean((1 + 1/5) * 1) = 1.2; gradient term: |(-1) - (+1)| = 2
+    assert torch.allclose(loss, torch.tensor(3.2), atol=1e-6)

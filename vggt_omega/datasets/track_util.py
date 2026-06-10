@@ -110,8 +110,10 @@ def build_tracks_by_depth(extrinsics, intrinsics, world_points, depths, point_ma
     # Filter out those satifsfying epipolar check
     negative_tracks = negative_tracks[:, negative_epipolar_check]
         
-    # Prepare for output
-    final_tracks = torch.zeros(B, target_track_num, 2, device=world_points.device, dtype=torch.float32)
+    # Prepare for output. Unfilled slots keep coords -1 (out of bounds) so
+    # consumers that select negative pairs by in-bounds coords skip them —
+    # zeros would alias patch (0, 0) and create false negative pairs there.
+    final_tracks = torch.full((B, target_track_num, 2), -1.0, device=world_points.device, dtype=torch.float32)
     final_vis_masks = torch.zeros(B, target_track_num, device=world_points.device, dtype=torch.bool)
     final_pos_masks = torch.zeros(target_track_num, device=world_points.device, dtype=torch.bool)
     
@@ -135,9 +137,10 @@ def build_tracks_by_depth(extrinsics, intrinsics, world_points, depths, point_ma
     final_tracks[:, sampled_pos_track_num:sampled_pos_track_num+sampled_neg_track_num] = sampled_neg_tracks
     
     if sampled_pos_track_num+sampled_neg_track_num!=target_track_num:
-        logging.warning(f"sampled_pos_track_num+sampled_neg_track_num!=target_track_num: {sampled_pos_track_num+sampled_neg_track_num} != {target_track_num}")
+        # Routine on low-parallax sequences (few epipolar-checked negatives survive), not an error.
+        logging.debug(f"sampled_pos_track_num+sampled_neg_track_num!=target_track_num: {sampled_pos_track_num+sampled_neg_track_num} != {target_track_num}")
     # Do not need to set final_vis_masks and final_pos_masks, because they are all False
-    # Do not need to check the shape of final_tracks, as it is zeroed out
+    # Unfilled track slots stay at the -1 out-of-bounds sentinel
     
         
     # NOTE: We need to do some visual checks

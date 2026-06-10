@@ -71,17 +71,21 @@ def _masked_mean(x, mask):
     return (x * mask).sum() / mask.sum().clamp(min=1)
 
 
-def _aleatoric_terms(err_abs, conf, gt_depth, valid, alpha, depth_clamp=1e-3):
+def _aleatoric_terms(err, conf, gt_depth, valid, alpha, depth_clamp=1e-3):
     """Shared paper form: c*(1+1/D)*|e| + c*|grad e| - alpha*log c, masked means.
 
-    err_abs (B,S,H,W) = |residual| (pre-summed over channels for points),
-    conf (B,S,H,W), gt_depth (B,S,H,W) in NORMALIZED units, valid (B,S,H,W) bool.
+    err (B,S,H,W) or (B,S,H,W,C) = SIGNED residual (the gradient term must see
+    sign flips: |grad e| >= |grad |e||), conf (B,S,H,W), gt_depth (B,S,H,W) in
+    NORMALIZED units, valid (B,S,H,W) bool.
     """
+    if err.dim() == 4:
+        err = err.unsqueeze(-1)
+    err_abs = err.abs().sum(dim=-1)
     w = 1.0 + 1.0 / gt_depth.clamp(min=depth_clamp)
     data = _masked_mean(conf * w * err_abs, valid)
-    gx = (err_abs[..., :, 1:] - err_abs[..., :, :-1]).abs()
+    gx = (err[:, :, :, 1:] - err[:, :, :, :-1]).abs().sum(dim=-1)
     mx = valid[..., :, 1:] & valid[..., :, :-1]
-    gy = (err_abs[..., 1:, :] - err_abs[..., :-1, :]).abs()
+    gy = (err[:, :, 1:] - err[:, :, :-1]).abs().sum(dim=-1)
     my = valid[..., 1:, :] & valid[..., :-1, :]
     grad = _masked_mean(conf[..., :, :-1] * gx, mx) + _masked_mean(conf[..., :-1, :] * gy, my)
     reg = -alpha * _masked_mean(torch.log(conf.clamp(min=1e-6)), valid)
@@ -89,14 +93,13 @@ def _aleatoric_terms(err_abs, conf, gt_depth, valid, alpha, depth_clamp=1e-3):
 
 
 def depth_loss(pred_depth, conf, gt_depth, valid, alpha=0.2):
-    return _aleatoric_terms((pred_depth - gt_depth).abs(), conf, gt_depth, valid, alpha)
+    return _aleatoric_terms(pred_depth - gt_depth, conf, gt_depth, valid, alpha)
 
 
 def point_loss(pred_depth, conf, pred_pose_enc, gt_points, gt_depth, valid, image_size_hw, alpha=0.2):
     ext, K = encoding_to_camera(pred_pose_enc, image_size_hw, build_intrinsics=True)
     pred_points = unproject_depth(pred_depth, ext, K)
-    err = (pred_points - gt_points).abs().sum(dim=-1)
-    return _aleatoric_terms(err, conf, gt_depth, valid, alpha)
+    return _aleatoric_terms(pred_points - gt_points, conf, gt_depth, valid, alpha)
 
 
 def matching_loss(patch_tokens, tracks, track_vis, track_pos, patch_size, image_size_hw, temperature=1.0):
