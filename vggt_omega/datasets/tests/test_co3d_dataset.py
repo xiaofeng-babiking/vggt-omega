@@ -416,3 +416,54 @@ def test_composed_native_geometry_and_set_img_size():
     composed.set_img_size(192)                        # half-res, /16 snapped
     s2 = composed.get_sample(0, ids=[0, 1], aspect_ratio=h / w)
     assert tuple(s2["images"].shape[-2:]) == (336, 192)
+
+
+# --- Real dirty-data robustness (corrupt frames found during smoke training) ---
+
+# Genuinely corrupt on-disk frame: maximum_depth stored as inf. Found (with
+# three more like it: cup/573_83734_165837, orange/339_34997_62372,
+# stopsign/599_92267_182752) when worker crashes killed the first multi-vendor
+# training runs. These tests self-retire if the dataset is ever cleaned.
+BAD_NPZ = os.path.join(CO3D_DIR, "parkingmeter/576_84910_167591/images/frame000041.npz")
+HAVE_BAD_NPZ = os.path.isfile(BAD_NPZ)
+
+
+@pytest.mark.skipif(not HAVE_BAD_NPZ, reason="corrupt co3d frame absent (data cleaned?)")
+def test_co3d_rejects_real_corrupt_inf_depth_frame():
+    with pytest.raises(ValueError, match="bad maximum_depth"):
+        Co3dDataset.read_co3d_frame_meta(BAD_NPZ)
+
+
+@pytest.mark.skipif(not HAVE_BAD_NPZ, reason="corrupt co3d frame absent (data cleaned?)")
+def test_composed_dataset_resamples_real_corrupt_co3d_fetch():
+    """Training-mode ComposedDataset over the real CO3D vendor must survive a
+    fetch that dies on the genuinely corrupt frame: the first vendor fetch
+    raises the real ValueError from the real npz, the retry redraws, and a
+    valid sample comes back through the full real pipeline (TupleConcatDataset
+    dispatch -> vendor get_data -> _tensorize)."""
+    from hydra.utils import instantiate
+
+    common = OmegaConf.merge(
+        _integration_common(),
+        OmegaConf.create({"inside_random": True, "fetch_retries": 3}),
+    )
+    ds = instantiate(
+        OmegaConf.create(_co3d_dataset_cfg(seqs=[SEQ, SEQ2], n=10)),
+        common_config=common,
+        _recursive_=False,
+    )
+    vendor = ds.base_dataset.datasets[0]
+    real_get_data = vendor.get_data
+    calls = {"n": 0}
+
+    def dirty_first_fetch(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            Co3dDataset.read_co3d_frame_meta(BAD_NPZ)
+        return real_get_data(*args, **kwargs)
+
+    vendor.get_data = dirty_first_fetch
+    sample = ds[(0, 4, 1.0)]
+    assert calls["n"] == 2
+    assert sample["images"].shape == (4, 3, sample["images"].shape[2], sample["images"].shape[3])
+    assert sample["seq_name"].startswith("co3d")
