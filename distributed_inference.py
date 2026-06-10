@@ -17,6 +17,7 @@ camera-pose (ATE/RPE) runs on rank 0 over the gathered trajectory.
 import json
 import os
 import sys
+import time
 from contextlib import nullcontext
 
 import numpy as np
@@ -42,7 +43,10 @@ logger = get_logger("vggt_omega.distributed_inference")
 
 gflags.DEFINE_string(
     "cp_strategy", "all_gather_kv",
-    "Distributed global-attention strategy: 'all_gather_kv' (single-node) or 'ring' (multi-node).",
+    "Distributed global-attention strategy: 'all_gather_kv' (gathers the full "
+    "K/V per rank; O(N) memory) or 'ring' (flash-tiled blockwise attention, "
+    "batched P2P on a dedicated communicator; O(N/world) K/V memory for long "
+    "sequences).",
 )
 gflags.DEFINE_boolean(
     "profile", False,
@@ -55,11 +59,13 @@ def run_local_inference(model, images, device):
     """Forward on the local frame shard; returns per-frame prediction arrays (numpy)."""
     images = images.contiguous().to(device)
     torch.cuda.reset_peak_memory_stats()
+    t0 = time.perf_counter()
     with torch.inference_mode():
         predictions = model(images)
     torch.cuda.synchronize()
     logger.info(
         f"[rank {dist.get_rank()}] {images.shape[1]} local frames | "
+        f"forward {time.perf_counter() - t0:.1f} s | "
         f"peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.2f} GB"
     )
     extrinsics, intrinsics = encoding_to_camera(predictions["pose_enc"], predictions["images"].shape[-2:])

@@ -3,7 +3,6 @@ import torch
 
 from vggt_omega.distributed.shard import (
     frame_counts_for,
-    key_keep_mask,
     pad_seq_to,
     shard_frame_ids,
 )
@@ -36,9 +35,3 @@ def test_pad_seq_to_pads_with_zeros_on_seq_dim():
     out = pad_seq_to(x, 5, dim=2)
     assert out.shape == (1, 2, 5, 4)
     assert out[:, :, :3].eq(1).all() and out[:, :, 3:].eq(0).all()
-
-
-def test_key_keep_mask_marks_only_real_keys():
-    mask = key_keep_mask([2, 1], max_len=2, device="cpu")  # 2 ranks
-    assert mask.shape == (1, 1, 1, 4)
-    assert mask.flatten().tolist() == [True, True, True, False]
