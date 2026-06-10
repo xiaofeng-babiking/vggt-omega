@@ -342,6 +342,10 @@ class Trainer:
                     )
                     pred_w2c = extrinsics.float().cpu().numpy()[0]
                     pred_depth = predictions["depth"].float().cpu().numpy()[0][..., 0]
+                    # depth = exp(logits): an undertrained model can overflow on
+                    # OOD pixels (e28+), poisoning mean abs_rel; clip far beyond
+                    # any physical depth so early-training val stays readable.
+                    pred_depth = np.clip(pred_depth, 0.0, 1e6)
                     modalities = set(sample.get("modalities", []))
                     if "extrinsics" in modalities and len(ids) >= 3:
                         gt_c2w = inference.world_to_camera_to_camera_to_world(
