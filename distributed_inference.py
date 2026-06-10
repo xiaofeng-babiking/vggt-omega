@@ -42,7 +42,10 @@ logger = get_logger("vggt_omega.distributed_inference")
 
 gflags.DEFINE_string(
     "cp_strategy", "all_gather_kv",
-    "Distributed global-attention strategy: 'all_gather_kv' (single-node) or 'ring' (multi-node).",
+    "Distributed global-attention strategy: 'all_gather_kv' (gathers the full "
+    "K/V per rank; O(N) memory) or 'ring' (flash-tiled blockwise attention, "
+    "batched P2P on a dedicated communicator; O(N/world) K/V memory for long "
+    "sequences).",
 )
 gflags.DEFINE_boolean(
     "profile", False,

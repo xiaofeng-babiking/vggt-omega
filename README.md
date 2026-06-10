@@ -211,7 +211,7 @@ implementations:
 | `--cp_strategy` | How it works | Best for |
 | :--- | :--- | :--- |
 | `all_gather_kv` (default) | All-gathers K/V to every rank, then computes local-query × global-KV attention | A single node — the gathered K/V ride the fast NVLink / NVSwitch links |
-| `ring` | Rotates K/V blocks around the ranks with online-softmax accumulation; never materializes the full K/V | Multiple nodes or extremely long sequences — minimal, overlap-friendly communication and the lowest per-rank memory |
+| `ring` | Rotates K/V blocks around the ranks, computing each block with the FlashAttention kernel and merging via online-softmax (log-sum-exp); never materializes the full K/V. Each rotation is one batched isend/irecv on a **dedicated communicator** (sharing one with the all-gathers deadlocks on PCIe), posted before the block's compute so communication overlaps it | Very long sequences or multiple nodes — `O(N/world)` K/V memory (vs `O(N)` for `all_gather_kv`) and overlap-friendly communication |
 
 ### What is communicated
 
