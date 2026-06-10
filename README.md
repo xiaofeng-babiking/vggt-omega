@@ -221,6 +221,14 @@ grows with sequence length (at 64 frames the ranking flips: 5.6 s vs 4.0 s,
 small rotations lose to one cheap gather). Crossover is around a few hundred
 frames; pick `all_gather_kv` for short sequences, `ring` for long ones.
 
+The CPU test suite cannot reach the FlashAttention ring path (the kernel is
+CUDA-only), so after touching `vggt_omega/distributed/attention.py` also run
+the GPU parity gate:
+
+```bash
+torchrun --standalone --nproc_per_node=4 vggt_omega/distributed/tests/gpu_parity_check.py
+```
+
 ### What is communicated
 
 Frames live in the batch dimension, so the DINOv2 patch embedding, the per-frame
