@@ -308,6 +308,138 @@ torchrun --standalone --nproc_per_node=8 distributed_inference.py \
 --cp_strategy all_gather_kv
 ```.
 
+## Training
+
+`train.py` trains `VGGTOmega` end to end with the paper's supervised recipe
+(Sec. 3.2 / 4.1 / A.1): the four-term loss (camera + depth + point + matching),
+AdamW with a 5% linear warmup into a cosine decay, bf16 mixed precision
+(applied **inside** the model — no outer autocast, no GradScaler), gradient
+checkpointing, a variable number of frames per sample, a 16-vendor dataset
+mixture, TensorBoard logging, and periodic validation with the same pose/depth
+metrics the inference scripts report.
+
+Install the training extra first (adds `tensorboard`):
+
+```bash
+pip install -e ".[train]"
+```
+
+### Launch
+
+A run is one YAML config plus a handful of flags. Single GPU:
+
+```bash
+python train.py \
+  --config vggt_omega/training/config/train_default.yaml \
+  --out_root outputs \
+  --run_name my_run
+```
+
+Multi-GPU data parallelism (DDP) via `torchrun`, one rank per GPU:
+
+```bash
+torchrun --standalone --nproc_per_node=8 train.py \
+  --config vggt_omega/training/config/train_default.yaml \
+  --out_root outputs \
+  --run_name my_run_8gpu
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--config` | Training config YAML (recipe + data mixture); default `vggt_omega/training/config/train_default.yaml` |
+| `--out_root` | Root for run dirs (gitignored); default `outputs` |
+| `--run_name` | Run dir name; default `train_<UTC timestamp>` |
+| `--resume` | Path to a `trainer_step*.pt` sidecar to resume from |
+| `--init_checkpoint` | Override `cfg.model.checkpoint` (model init weights) |
+
+Everything lands under `<out_root>/<run_name>/`: the resolved `config.yaml`,
+TensorBoard events under `tb/`, and checkpoints. The flag names are
+deliberately disjoint from `inference.py`'s (`--out_root`, not
+`--output_root`): the trainer's validation imports `inference`, and both
+register their flags on the same gflags singleton.
+
+The data configs point at machine-specific `/jfs/...` paths — edit the vendor
+`*_DIR` entries for your environment. The `blendedmvs` / `mvs_synth` vendors
+read EXR depth: launch with `OPENCV_IO_ENABLE_OPENEXR=1`.
+
+### Configuration
+
+`train_default.yaml` is the full paper recipe. The knobs you are most likely
+to touch:
+
+| Knob | Default | What it does |
+| :--- | :--- | :--- |
+| `run.max_steps` | `160000` | Total optimizer steps (the paper's supervised stage) |
+| `optim.lr` | `2.0e-4` | Peak LR, reached after the linear warmup (`optim.warmup_frac` = 5% of `max_steps`), then cosine-decayed to 0. Tuned for the paper's 128-GPU global batch — scale it down for small runs |
+| `loss.weights` | `{camera: 5.0, depth: 1.0, point: 0.5, match: 0.1}` | Per-term weights. `match: 0` disables the matching term and the extra patch-token return; pair it with `common_config.load_track: false` to skip dataset-side track building too |
+| `data.train.common_config.img_nums` | `[1, 24]` | Frames per sample, drawn uniformly from this range (paper Sec. 4.1) |
+| `data.train.max_img_per_gpu` | `24` | Per-GPU frame budget: a batch packs `⌊max_img_per_gpu / frames⌋` samples. Appears twice (loader arg and inside `common_config`) — keep both in sync |
+| `model.gradient_checkpointing` | `true` | Recompute aggregator blocks during backward: large activation-memory savings for extra compute, bit-identical math |
+| `model.checkpoint` | released 1B checkpoint | Init weights; `null` trains from scratch (see below). Override per run with `--init_checkpoint` |
+
+### Monitoring
+
+```bash
+tensorboard --logdir outputs/<run_name>/tb
+```
+
+Rank 0 writes the weighted total and each raw loss term
+(`train/loss_{total,camera,depth,point,match}`), the LR, grad norm, and GT
+normalization scale, batch shape (`train/frames_per_sample`,
+`train/batch_size`), throughput and peak memory (`perf/*`), the batch total
+loss bucketed by the vendors present in it
+(`train/loss_total_by_vendor/<vendor>`), and — every `run.img_log_interval`
+steps — an image grid of RGB / predicted depth / confidence / |error| for the
+first frame in the batch. Every `run.val_interval` steps, rank 0 evaluates the
+sequences configured under `val.configures` and logs
+`val/<vendor>/{ate_rmse,rpe_rot_mean,abs_rel_mean,delta1}`.
+
+### Checkpoints and resuming
+
+Every `run.ckpt_interval` steps, rank 0 writes a pair of files (pruned to the
+newest `run.keep_last`):
+
+- `model_step<NNNNNN>.pt` — a **bare `state_dict`**, the released-checkpoint
+  format: it loads unchanged (`strict=True`) into `inference.py`,
+  `demo_gradio.py`, and `distributed_inference.py`, and back into `train.py`
+  via `--init_checkpoint`.
+- `trainer_step<NNNNNN>.pt` — the trainer sidecar: step, optimizer and
+  scheduler state, RNG states, and the resolved config.
+
+Resume from the sidecar; the matching model weights are loaded automatically
+from the sibling `model_step*.pt`:
+
+```bash
+python train.py \
+  --config vggt_omega/training/config/train_default.yaml \
+  --out_root outputs --run_name my_run \
+  --resume outputs/my_run/trainer_step002000.pt
+```
+
+### From scratch vs. released checkpoint
+
+By default `model.checkpoint` initializes from the released 1B weights. Set it
+to `null` (or omit it in your own config) to train from scratch — the trainer
+then runs a full re-initialization sweep: `reset_parameters()` over every
+module, each module's own `init_weights()` (ViT class/storage/mask tokens,
+RoPE, camera/register tokens), and the ViT `bias_mask` convention. This
+matters: several parameters are allocated with `torch.empty` and a bare
+`VGGTOmega()` produces NaNs on the first forward without it.
+
+### Smoke test
+
+`train_smoke.yaml` is a 50-step, single-TUM-vendor sanity config with
+validation off and a 12-frame-per-GPU budget:
+
+```bash
+python train.py \
+  --config vggt_omega/training/config/train_smoke.yaml \
+  --out_root outputs --run_name smoke_1gpu
+```
+
+Expect 50 finite, decreasing-ish loss values, checkpoints at steps 25 and 50,
+and an events file under `outputs/smoke_1gpu/tb/`.
+
 ## License
 
 See the [LICENSE](./LICENSE) file for details about the license under which
