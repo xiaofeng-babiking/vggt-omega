@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from vggt_omega.utils.geometry import project_world_points_to_cam, cam_from_img, sampson_epipolar_distance
+from vggt_omega.datasets.composed_dataset import ComposedDataset
 from vggt_omega.datasets.track_util import build_tracks_by_depth, track_epipolar_check
 
 
@@ -74,3 +75,41 @@ def test_build_tracks_by_depth_end_to_end():
     assert pos.sum() >= 64                                  # plenty of positives on a fully-valid plane
     assert vis[0, pos].all()                                # positives visible in query frame
     assert not vis[:, ~pos].any()                           # negatives carry vis=False by contract
+
+
+def _stub_vendor_batch():
+    # raw numpy batch as a vendor's get_data would return it, WITHOUT a 'tracks' key
+    H = W = 64
+    K = np.tile(np.array([[100., 0, 32], [0, 100., 32], [0, 0, 1]], dtype=np.float32), (2, 1, 1))
+    E = np.zeros((2, 3, 4), dtype=np.float32); E[:, :3, :3] = np.eye(3)
+    E[1, 0, 3] = -0.1
+    vs, us = np.meshgrid(np.arange(H, dtype=np.float32), np.arange(W, dtype=np.float32), indexing="ij")
+    z = np.full((H, W), 2.0, dtype=np.float32)
+    x = (us - 32) / 100 * z; y = (vs - 32) / 100 * z
+    wp = np.stack([x, y, z], -1)
+    cam_points = np.stack([wp, wp - np.array([0.1, 0, 0], dtype=np.float32)])
+    return {
+        "seq_name": "stub_plane",
+        "ids": np.array([0, 1]),
+        "images": np.zeros((2, H, W, 3), dtype=np.uint8),
+        "depths": np.stack([z, z]),
+        "extrinsics": E,
+        "intrinsics": K,
+        "cam_points": cam_points,
+        "world_points": np.stack([wp, wp]),
+        "point_masks": np.ones((2, H, W), dtype=bool),
+    }
+
+
+def test_tensorize_builds_tracks_when_vendor_has_none():
+    ds = object.__new__(ComposedDataset)
+    ds.load_track = True
+    ds.track_num = 64
+    ds.track_neg_ratio = 0.25
+    ds.training = False
+    sample = ds._tensorize(_stub_vendor_batch())
+    assert sample["tracks"].shape == (2, 64, 2)
+    assert sample["track_vis_mask"].dtype == torch.bool
+    assert sample["track_positive_mask"].shape == (64,)
+    # neg_ratio plumbed through: 64 - int(64 * 0.25) positive slots
+    assert sample["track_positive_mask"].sum() == 48

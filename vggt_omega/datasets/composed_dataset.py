@@ -70,6 +70,8 @@ class ComposedDataset(Dataset, ABC):
         self.load_track = common_config.load_track
         # Number of point tracks to include per sequence
         self.track_num = common_config.track_num
+        # Fraction of on-the-fly tracks that should be negative pairs
+        self.track_neg_ratio = common_config.get("track_neg_ratio", 0.5)
 
         # --- Mode Settings ---
         # Whether the dataset is being used for training (affects augmentations)
@@ -162,7 +164,7 @@ class ComposedDataset(Dataset, ABC):
 
         # --- Track Processing (if enabled) ---
         if self.load_track:
-            if batch["tracks"] is not None:
+            if batch.get("tracks") is not None:
                 # Use pre-computed tracks from the dataset
                 tracks = torch.from_numpy(np.stack(batch["tracks"]).astype(np.float32))
                 track_vis_mask = torch.from_numpy(np.stack(batch["track_masks"]).astype(bool))
@@ -189,7 +191,8 @@ class ComposedDataset(Dataset, ABC):
                 # This creates synthetic tracks based on the 3D information available
                 tracks, track_vis_mask, track_positive_mask = build_tracks_by_depth(
                     extrinsics, intrinsics, world_points, depths, point_masks, images,
-                    target_track_num=self.track_num, seq_name=seq_name
+                    target_track_num=self.track_num, neg_ratio=self.track_neg_ratio,
+                    seq_name=seq_name
                 )
 
             # Add track information to the sample dictionary
