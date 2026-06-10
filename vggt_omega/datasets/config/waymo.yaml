@@ -1,0 +1,77 @@
+# Per-dataset configure for inference.py (Waymo Open Dataset).
+#
+# `inference.py --configure <this file>` loads it with OmegaConf and instantiates
+# `dataset` directly (`common_config` is passed in, mirroring the training
+# instantiation), so each frame is tensorized through the exact same contract the
+# model is trained on. Copy this file per dataset (e.g. tum.yaml, scannet.yaml).
+#
+# Derived from the training defaults (datasets/config/default_dataset.yaml +
+# default.yaml) with the EVAL overrides baked in -- the knobs flipped here are
+# exactly the ones the old inference flags used to override at runtime, kept in
+# one place so inference geometry/tensorization cannot silently drift.
+
+# --- ComposedDataset: the training loader, instantiated for eval -------------
+dataset:
+  _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
+  dataset_configs:
+    - _target_: vggt_omega.datasets.vendors.waymo.WaymoDataset
+      split: train
+      # Machine-specific path -- override for your environment.
+      WAYMO_DIR: /jfs/Data_4DFF/train_data/waymo
+      # Sequences to run, as names or glob patterns. One sequence = one segment x
+      # one camera, named "<segment short name>/cam<N>" (cam1=FRONT ... cam5=
+      # SIDE_RIGHT); a bare segment name/pattern matches all 5 of its cameras.
+      # ["*"] = ALL sequences under WAYMO_DIR (798 segments x 5 cams = 3990).
+      # The default below is the survey's gold-check segment, front camera:
+      # 198 frames of 10 Hz driving video (segments run ~196-199 frames/camera).
+      sequences: ["segment-10017090168044687777_6380_000_6400_000/cam1"]
+      len_train: 100000
+      len_test: 10000
+      expand_ratio: 8
+      cameras: [1, 2, 3, 4, 5]
+      intrinsics: null
+      use_blacklist: false
+      min_num_images: 24
+
+# --- common_config: shared tensorization, with deterministic-eval overrides --
+# Inherited from training (datasets/config/default_dataset.yaml) except the
+# commented lines, which reproduce deterministic eval geometry: no scale/colour
+# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
+# window / duplicates).
+common_config:
+  img_size: 512
+  patch_size: 16
+  fix_img_num: -1
+  fix_aspect_ratio: 1.0
+  load_track: false
+  track_num: 1024
+  training: false           # eval: no scale/colour augmentation
+  inside_random: false      # eval: honor explicit seq_index / ids
+  rescale: true
+  rescale_aug: false        # eval: deterministic resize
+  landscape_check: false
+  debug: false
+  get_nearby: false         # eval: use our ordered ids verbatim
+  load_depth: true
+  img_nums: [2, 24]
+  max_img_per_gpu: 48
+  allow_duplicate_img: false
+  repeat_batch: false
+  augs:
+    cojitter: true
+    cojitter_ratio: 0.3
+    scales: null            # eval: no scale augmentation
+    aspects: [0.33, 1.0]
+    color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+    gray_scale: true
+    gau_blur: false
+
+# --- inference: dataset sampling / resolution knobs --------------------------
+# These shape what the dataset yields, so they live here per dataset. The
+# output/fusion knobs (output_root, conf_percentile, max_points) are CLI flags.
+inference:
+  # Frames per sequence. <=0 = ALL frames; otherwise this many, evenly spaced and ordered.
+  num_frames: -1
+  # Resolution scale factor. 1.0 = the dataset's native long side; the effective
+  # long side is round(native_long * image_scale) snapped to a multiple of 16.
+  image_scale: 1.0
