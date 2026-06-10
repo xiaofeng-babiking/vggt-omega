@@ -50,6 +50,62 @@ class AllGatherKVAttention:
         return F.scaled_dot_product_attention(q, k_full, v_full)
 
 
+_MANUAL_KEY_CHUNK = 4096  # keys per online-softmax chunk on the manual path
+
+
+def _block_attn_manual(q, k, v, scale, key_chunk=_MANUAL_KEY_CHUNK):
+    """Exact attention of q over ONE K/V block via chunked online softmax.
+
+    Returns (out, lse), both fp32: out (B,H,Lq,D) is the normalized attention
+    output, lse (B,H,Lq) = log sum_j exp(scale * q.k_j). Iterating keys in
+    chunks keeps memory O(Lq * key_chunk) instead of O(Lq * Lk). Serves CPU
+    (gloo tests) and fp32-on-GPU (camera head), where the flash kernel is
+    unavailable.
+    """
+    qf = q.float()
+    B, H, Lq, Dh = qf.shape
+    m = torch.full((B, H, Lq, 1), float("-inf"), device=q.device, dtype=torch.float32)
+    l = torch.zeros((B, H, Lq, 1), device=q.device, dtype=torch.float32)
+    acc = torch.zeros((B, H, Lq, Dh), device=q.device, dtype=torch.float32)
+    for start in range(0, k.shape[2], key_chunk):
+        kc = k[:, :, start : start + key_chunk].float()
+        vc = v[:, :, start : start + key_chunk].float()
+        s = torch.matmul(qf, kc.transpose(-1, -2)) * scale
+        m_new = torch.maximum(m, s.amax(dim=-1, keepdim=True))
+        corr = torch.exp(m - m_new)
+        p = torch.exp(s - m_new)
+        l = l * corr + p.sum(dim=-1, keepdim=True)
+        acc = acc * corr + torch.matmul(p, vc)
+        m = m_new
+    tiny = torch.finfo(torch.float32).tiny
+    out = acc / l.clamp_min(tiny)
+    lse = (m + l.clamp_min(tiny).log()).squeeze(-1)
+    return out, lse
+
+
+def _block_attn_flash(q, k, v, scale):
+    """One K/V block via the FlashAttention kernel. Returns (out fp32, lse fp32).
+
+    The aten op (unlike F.scaled_dot_product_attention) exposes the log-sum-exp
+    needed to merge blocks exactly. CUDA fp16/bf16 only.
+    """
+    out, lse = torch.ops.aten._scaled_dot_product_flash_attention(q, k, v, scale=scale)[:2]
+    return out.float(), lse
+
+
+def _merge_block(out_acc, lse_acc, o_blk, lse_blk):
+    """Online-softmax combine of two normalized partial attentions (all fp32).
+
+    Initial state (out_acc=0, lse_acc=-inf) merges cleanly: exp(-inf - x) == 0.
+    """
+    lse_new = torch.logaddexp(lse_acc, lse_blk)
+    out_acc = (
+        out_acc * torch.exp(lse_acc - lse_new).unsqueeze(-1)
+        + o_blk * torch.exp(lse_blk - lse_new).unsqueeze(-1)
+    )
+    return out_acc, lse_new
+
+
 def _ring_exchange(send: torch.Tensor, recv_shape, cp_group, rank, world) -> torch.Tensor:
     """Send `send` to rank+1, receive the next block (shape `recv_shape`) from rank-1.
 
