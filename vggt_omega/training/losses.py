@@ -1,7 +1,8 @@
 import torch
+import torch.nn.functional as F
 
 from vggt_omega.utils.geometry import closed_form_inverse_se3
-from vggt_omega.utils.pose_enc import encoding_to_camera
+from vggt_omega.utils.pose_enc import encoding_to_camera, extri_intri_to_pose_encoding
 
 
 def normalize_gt_into_first_camera(extrinsics, depths, world_points, point_masks, eps=1e-6):
@@ -96,3 +97,97 @@ def point_loss(pred_depth, conf, pred_pose_enc, gt_points, gt_depth, valid, imag
     pred_points = unproject_depth(pred_depth, ext, K)
     err = (pred_points - gt_points).abs().sum(dim=-1)
     return _aleatoric_terms(err, conf, gt_depth, valid, alpha)
+
+
+def matching_loss(patch_tokens, tracks, track_vis, track_pos, patch_size, image_size_hw, temperature=1.0):
+    """BCE over sigmoid(cosine sim) of last-layer patch tokens at track locations.
+
+    patch_tokens (B,S,P,C) any float dtype (cast to fp32 here); tracks (B,S,T,2) px;
+    track_vis (B,S,T) bool (False for ALL negative-track frames by dataset contract);
+    track_pos (B,T) bool. Query frame is 0; pairs are (0, i) for i in 1..S-1.
+    Positives: vis[0,t] & vis[i,t]. Negatives: ~pos[t] & in-bounds at both frames.
+    Returns scalar fp32; zero tensor if S < 2 or no valid pairs.
+    """
+    B, S, P, C = patch_tokens.shape
+    H, W = image_size_hw
+    gw = W // patch_size
+    if S < 2:
+        return patch_tokens.new_zeros((), dtype=torch.float32)
+    z = F.normalize(patch_tokens.float(), dim=-1)
+    inb = (tracks[..., 0] >= 0) & (tracks[..., 0] < W) & (tracks[..., 1] >= 0) & (tracks[..., 1] < H)
+    idx = (
+        (tracks[..., 1].clamp(0, H - 1) // patch_size).long() * gw
+        + (tracks[..., 0].clamp(0, W - 1) // patch_size).long()
+    )
+    tok = torch.gather(z, 2, idx.unsqueeze(-1).expand(-1, -1, -1, C))
+    sim = (tok[:, :1] * tok).sum(-1)[:, 1:] / temperature
+    pos_pair = (track_vis[:, :1] & track_vis[:, 1:]) & track_pos[:, None]
+    neg_pair = (inb[:, :1] & inb[:, 1:]) & ~track_pos[:, None]
+    loss = patch_tokens.new_zeros((), dtype=torch.float32)
+    if pos_pair.any():
+        loss = loss + F.binary_cross_entropy_with_logits(
+            sim[pos_pair], torch.ones_like(sim[pos_pair])
+        )
+    if neg_pair.any():
+        loss = loss + F.binary_cross_entropy_with_logits(
+            sim[neg_pair], torch.zeros_like(sim[neg_pair])
+        )
+    return loss
+
+
+class TrainLossComputer:
+    """Normalizes GT once, computes all four losses + weighted total.
+
+    weights: dict(camera=5.0, depth=1.0, point=0.5, match=0.1).
+    __call__(predictions, batch, image_size_hw) -> dict of scalar tensors:
+      total, camera, depth, point, match, gt_scale (detached mean, for logging).
+    batch keys: depths (B,S,H,W), extrinsics (B,S,3,4), intrinsics (B,S,3,3),
+      world_points (B,S,H,W,3), point_masks (B,S,H,W) bool, optionally
+      tracks/track_vis_mask/track_positive_mask.
+    predictions keys: pose_enc, depth (B,S,H,W,1) -> squeezed here, depth_conf,
+      optionally patch_tokens. The match term is computed only when its weight > 0
+      AND track keys AND patch_tokens are present.
+    """
+
+    def __init__(self, weights, alpha=0.2, temperature=1.0, patch_size=16):
+        self.weights = dict(weights)
+        self.alpha = alpha
+        self.temperature = temperature
+        self.patch_size = patch_size
+
+    def __call__(self, predictions, batch, image_size_hw):
+        n_ext, n_dep, n_wp, scale = normalize_gt_into_first_camera(
+            batch["extrinsics"], batch["depths"], batch["world_points"], batch["point_masks"]
+        )
+        valid = batch["point_masks"]
+        gt_enc = extri_intri_to_pose_encoding(n_ext, batch["intrinsics"], image_size_hw)
+        pred_depth = predictions["depth"].squeeze(-1)
+        out = {
+            "camera": camera_loss(predictions["pose_enc"], gt_enc),
+            "depth": depth_loss(pred_depth, predictions["depth_conf"], n_dep, valid, self.alpha),
+            "point": point_loss(
+                pred_depth,
+                predictions["depth_conf"],
+                predictions["pose_enc"],
+                n_wp,
+                n_dep,
+                valid,
+                image_size_hw,
+                self.alpha,
+            ),
+            "gt_scale": scale.detach().mean(),
+        }
+        if self.weights.get("match", 0) > 0 and "patch_tokens" in predictions and "tracks" in batch:
+            out["match"] = matching_loss(
+                predictions["patch_tokens"],
+                batch["tracks"],
+                batch["track_vis_mask"],
+                batch["track_positive_mask"],
+                self.patch_size,
+                image_size_hw,
+                self.temperature,
+            )
+        else:
+            out["match"] = predictions["pose_enc"].new_zeros(())
+        out["total"] = sum(self.weights.get(k, 0.0) * out[k] for k in ("camera", "depth", "point", "match"))
+        return out
