@@ -255,6 +255,13 @@ class CameraPoseMetric(BaseMetric):
         if tf_mats.ndim == 3 and tf_mats.shape[1:] == (3, 4):
             bottom = np.tile(cls._BOTTOM_ROW, (tf_mats.shape[0], 1, 1))
             tf_mats = np.concatenate([tf_mats, bottom], axis=1)
+        # Float32 inputs (network pose heads, float32-cast GT) drift slightly
+        # off SO(3); evo's lie algebra rejects rotations outside its strict
+        # tolerance, so project each R onto the nearest rotation (orthogonal
+        # Procrustes via SVD, determinant kept +1).
+        for T in tf_mats:
+            u, _, vt = np.linalg.svd(T[:3, :3])
+            T[:3, :3] = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
         return PosePath3D(poses_se3=list(tf_mats))
 
     # ---- plotting (internal) ----------------------------------------------- #

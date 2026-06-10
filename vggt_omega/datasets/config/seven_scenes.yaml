@@ -1,0 +1,70 @@
+# Per-dataset configure for inference.py (Microsoft 7-Scenes).
+#
+# `inference.py --configure <this file>` loads it with OmegaConf and instantiates
+# `dataset` directly (`common_config` is passed in, mirroring the training
+# instantiation), so each frame is tensorized through the exact same contract the
+# model is trained on.
+#
+# Example sequence: scenes ["heads"] with split "test" selects exactly one
+# sequence (heads/seq-01, 1000 frames at 30 Hz, Kinect v1 640x480). Use
+# scenes: ["*"] to select every scene (the split files then pick the seq-NN
+# dirs per scene: test = 17 sequences, train = 29).
+
+# --- ComposedDataset: the training loader, instantiated for eval -------------
+dataset:
+  _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
+  dataset_configs:
+    - _target_: vggt_omega.datasets.vendors.seven_scenes.SevenScenesDataset
+      split: test
+      # Machine-specific path -- override for your environment.
+      SEVEN_SCENES_DIR: /jfs/guibiao/streamVGGT/data/eval/7scenes
+      # Scene dirs to use, as names or glob patterns. ["heads"] = the single
+      # heads/seq-01 test sequence; ["*"] = ALL scenes.
+      scenes: ["heads"]
+      len_train: 100000
+      len_test: 10000
+      expand_ratio: 8
+      depth_scale: 1000.0
+      # "proj" = depth registered to the color camera (use this); "raw" is the
+      # unregistered depth-sensor frame.
+      depth_variant: proj
+      frame_step: 1
+      intrinsics: null
+      min_num_images: 24
+
+# --- common_config: shared tensorization, with deterministic-eval overrides --
+common_config:
+  img_size: 512
+  patch_size: 16
+  fix_img_num: -1
+  fix_aspect_ratio: 1.0
+  load_track: false
+  track_num: 1024
+  training: false           # eval: no scale/colour augmentation
+  inside_random: false      # eval: honor explicit seq_index / ids
+  rescale: true
+  rescale_aug: false        # eval: deterministic resize
+  landscape_check: false
+  debug: false
+  get_nearby: false         # eval: use our ordered ids verbatim
+  load_depth: true
+  img_nums: [2, 24]
+  max_img_per_gpu: 48
+  allow_duplicate_img: false
+  repeat_batch: false
+  augs:
+    cojitter: true
+    cojitter_ratio: 0.3
+    scales: null            # eval: no scale augmentation
+    aspects: [0.33, 1.0]
+    color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+    gray_scale: true
+    gau_blur: false
+
+# --- inference: dataset sampling / resolution knobs --------------------------
+inference:
+  # Frames per sequence. <=0 = ALL frames; otherwise this many, evenly spaced and ordered.
+  num_frames: -1
+  # Resolution scale factor. 1.0 = the dataset's native long side; the effective
+  # long side is round(native_long * image_scale) snapped to a multiple of 16.
+  image_scale: 1.0

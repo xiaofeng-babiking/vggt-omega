@@ -250,7 +250,12 @@ def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
 
 def gt_from_sample(sample: dict) -> dict:
     """Pull the ground-truth arrays inference scores against (eval semantics
-    unchanged: GT depth + extrinsics; predicted intrinsics drive unprojection)."""
+    unchanged: GT depth + extrinsics; predicted intrinsics drive unprojection).
+
+    ``modalities`` (the vendor's advertised GT set) rides along so the metrics
+    stage can skip scores whose GT does not exist for this dataset — e.g. NYU
+    ships no poses and DL3DV no depth; their placeholder arrays must not be
+    scored as ground truth."""
     return {
         "gt_depth": sample["depths"]
         .numpy()
@@ -258,6 +263,7 @@ def gt_from_sample(sample: dict) -> dict:
         "gt_extrinsics": sample["extrinsics"]
         .numpy()
         .astype(np.float32),  # (S, 3, 4) world->cam
+        "modalities": list(sample.get("modalities", [])),
     }
 
 
@@ -409,32 +415,46 @@ def dump_and_eval(
     ply_path = os.path.join(output_dir, "pointcloud.ply")
     write_ply(ply_path, points, colors)
 
-    # --- 5. Evaluate against TUM ground truth ------------------------------------
+    # --- 5. Evaluate against the dataset's advertised GT modalities --------------
+    # Vendors declare which arrays are real ground truth (sample["modalities"]);
+    # placeholder arrays (NYU's identity poses, DL3DV's zero depth) are never
+    # scored. A metric whose GT is absent is reported as null in metrics.json.
     metrics_dir = os.path.join(output_dir, "metrics")
     os.makedirs(metrics_dir, exist_ok=True)
+    modalities = set(loaded.get("modalities") or [])
 
     # 5a. Camera pose: ATE / RPE on camera-to-world trajectories (Sim3-aligned,
-    # since VGGT poses are metric only up to a global scale).
-    gt_c2w = world_to_camera_to_camera_to_world(gt_extrinsics)
-    pred_c2w = world_to_camera_to_camera_to_world(pred_extrinsics)
-    camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
-        vis_path=os.path.join(metrics_dir, "camera_pose")
-    )
+    # since VGGT poses are metric only up to a global scale). Needs EXTRINSICS
+    # GT and >= 2 poses (RPE is over relative motions).
+    camera_pose_metrics = None
+    if "extrinsics" in modalities and num_f >= 2:
+        gt_c2w = world_to_camera_to_camera_to_world(gt_extrinsics)
+        pred_c2w = world_to_camera_to_camera_to_world(pred_extrinsics)
+        camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
+            vis_path=os.path.join(metrics_dir, "camera_pose")
+        )
 
     # 5b. Mono depth: per-frame Abs Rel / delta (per-image median alignment),
-    # aggregated to the headline means across frames.
-    per_frame_depth = []
-    for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
-        res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
-        per_frame_depth.append(res)
-    mono_depth_metrics = {
-        "abs_rel_mean": float(np.mean([d["abs_rel"]["mean"] for d in per_frame_depth])),
-        "abs_rel_rmse": float(np.mean([d["abs_rel"]["rmse"] for d in per_frame_depth])),
-        "delta1": float(np.mean([d["delta"]["delta1"] for d in per_frame_depth])),
-        "delta2": float(np.mean([d["delta"]["delta2"] for d in per_frame_depth])),
-        "delta3": float(np.mean([d["delta"]["delta3"] for d in per_frame_depth])),
-        "num_frames": int(num_f),
-    }
+    # aggregated to the headline means across frames. Needs DEPTH GT; frames
+    # without a single valid GT pixel (possible with sparse LiDAR) are skipped
+    # rather than crashing the metric.
+    mono_depth_metrics = None
+    if "depths" in modalities:
+        per_frame_depth = []
+        for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
+            if not (gt_depth[i] > 0).any():
+                continue
+            res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
+            per_frame_depth.append(res)
+        if per_frame_depth:
+            mono_depth_metrics = {
+                "abs_rel_mean": float(np.mean([d["abs_rel"]["mean"] for d in per_frame_depth])),
+                "abs_rel_rmse": float(np.mean([d["abs_rel"]["rmse"] for d in per_frame_depth])),
+                "delta1": float(np.mean([d["delta"]["delta1"] for d in per_frame_depth])),
+                "delta2": float(np.mean([d["delta"]["delta2"] for d in per_frame_depth])),
+                "delta3": float(np.mean([d["delta"]["delta3"] for d in per_frame_depth])),
+                "num_frames": len(per_frame_depth),
+            }
 
     all_metrics = {
         "scene": seq_name,
@@ -447,18 +467,29 @@ def dump_and_eval(
         json.dump(all_metrics, f, indent=2)
 
     # --- 6. Report ---------------------------------------------------------------
-    logger.info(
-        f"[{seq_name}] {num_f} frames @ {height}x{width} -> {output_dir}\n"
-        f"  point cloud: {points.shape[0]} points -> {ply_path}\n"
-        f"  camera pose (Sim3-aligned):\n"
-        f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m\n"
-        f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m\n"
-        f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg\n"
-        f"  mono depth (median-aligned, mean over frames):\n"
-        f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}\n"
-        f"    delta1  = {mono_depth_metrics['delta1']:.4f}\n"
-        f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}"
-    )
+    report = [
+        f"[{seq_name}] {num_f} frames @ {height}x{width} -> {output_dir}",
+        f"  point cloud: {points.shape[0]} points -> {ply_path}",
+    ]
+    if camera_pose_metrics is not None:
+        report += [
+            "  camera pose (Sim3-aligned):",
+            f"    ATE  rmse = {camera_pose_metrics['ate']['rmse']:.4f} m",
+            f"    RPE  trans rmse = {camera_pose_metrics['rpe_trans']['rmse']:.4f} m",
+            f"    RPE  rot   rmse = {camera_pose_metrics['rpe_rot']['rmse']:.4f} deg",
+        ]
+    else:
+        report.append("  camera pose: skipped (no EXTRINSICS ground truth)")
+    if mono_depth_metrics is not None:
+        report += [
+            "  mono depth (median-aligned, mean over frames):",
+            f"    Abs Rel = {mono_depth_metrics['abs_rel_mean']:.4f}",
+            f"    delta1  = {mono_depth_metrics['delta1']:.4f}",
+        ]
+    else:
+        report.append("  mono depth: skipped (no DEPTH ground truth)")
+    report.append(f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}")
+    logger.info("\n".join(report))
 
 
 def main():
