@@ -35,3 +35,23 @@ def all_gather_ints(value: int, group, device) -> list[int]:
     out = [torch.zeros_like(t) for _ in range(world)]
     dist.all_gather(out, t, group=group)
     return [int(x.item()) for x in out]
+
+
+_p2p_groups: dict = {}
+
+
+def p2p_group_for(group) -> "dist.ProcessGroup":
+    """Dedicated process group (own communicator) for ring P2P traffic.
+
+    NCCL may schedule send/recv and collectives that share a communicator
+    differently across ranks, which deadlocked the full multi-block model on
+    8x PCIe (issue #3); an isolated communicator removes that interaction.
+    Creation is collective: the first call must happen at a rank-symmetric
+    point (the ring strategy guarantees this). Cached per parent group.
+    """
+    pg = _p2p_groups.get(group)
+    if pg is None:
+        pg = dist.new_group(ranks=dist.get_process_group_ranks(group))
+        dist.barrier(group=pg)  # force eager communicator init, symmetrically
+        _p2p_groups[group] = pg
+    return pg
