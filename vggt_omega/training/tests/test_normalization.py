@@ -72,3 +72,23 @@ def test_unproject_is_differentiable():
     pts = unproject_depth(dep, ext, _intrinsics_for_scene(B=1, S=2))
     pts[mask].sum().backward()
     assert dep.grad is not None and torch.isfinite(dep.grad).all()
+
+
+def test_normalize_scale_falls_back_to_camera_centers_without_points():
+    # Depth-less vendors (DL3DV) ship all-zero depth -> point_masks all False.
+    # The scale must come from camera-center distances, not clamp to eps
+    # (which divided GT translations by 1e6 and exploded the camera loss).
+    ext, dep, wp, mask = _random_consistent_scene(B=2, S=4)
+    no_points = torch.zeros_like(mask)
+    n_ext, n_dep, n_wp, scale = normalize_gt_into_first_camera(ext, dep, wp, no_points)
+    assert (scale > 1e-3).all()
+    assert n_ext[..., 3].abs().max() < 1e3              # translations stay O(1..100), never 1/eps
+    # frame-0 anchoring is unaffected
+    assert torch.allclose(n_ext[:, 0, :3, 3], torch.zeros(2, 3), atol=1e-5)
+
+
+def test_normalize_scale_static_single_frame_is_identity_scale():
+    ext, dep, wp, mask = _random_consistent_scene(B=1, S=1)
+    no_points = torch.zeros_like(mask)
+    _, _, _, scale = normalize_gt_into_first_camera(ext, dep, wp, no_points)
+    assert torch.allclose(scale, torch.ones(1))         # S=1: cam-center scale is 0 -> 1.0 fallback

@@ -27,9 +27,16 @@ def normalize_gt_into_first_camera(extrinsics, depths, world_points, point_masks
     R0, t0 = extrinsics[:, 0, :3, :3], extrinsics[:, 0, :3, 3]
     new_wp = torch.einsum("bij,bshwj->bshwi", R0, world_points) + t0[:, None, None, None]
     dist = new_wp.norm(dim=-1)
-    msum = point_masks.sum(dim=(1, 2, 3)).clamp(min=1)
-    scale = (dist * point_masks).sum(dim=(1, 2, 3)) / msum
-    scale = scale.clamp(min=eps)
+    msum = point_masks.sum(dim=(1, 2, 3))
+    point_scale = (dist * point_masks).sum(dim=(1, 2, 3)) / msum.clamp(min=1)
+    # Samples without any valid point (depth-less vendors like DL3DV) would
+    # otherwise clamp to eps and explode the camera GT by 1/eps; fall back to
+    # the mean camera-center distance, and to 1.0 (no scaling) if that is also
+    # degenerate (single frame / static rig).
+    centers = -torch.einsum("bsji,bsj->bsi", new_ext[..., :3], new_ext[..., 3])
+    cam_scale = centers.norm(dim=-1).mean(dim=1)
+    scale = torch.where(msum > 0, point_scale, cam_scale)
+    scale = torch.where(scale > eps, scale, torch.ones_like(scale))
     sview = scale[:, None, None, None]
     new_ext = new_ext.clone()
     new_ext[..., 3] = new_ext[..., 3] / scale[:, None, None]
