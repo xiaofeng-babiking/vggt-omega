@@ -17,6 +17,7 @@ camera-pose (ATE/RPE) runs on rank 0 over the gathered trajectory.
 import json
 import os
 import sys
+import time
 from contextlib import nullcontext
 
 import numpy as np
@@ -58,11 +59,13 @@ def run_local_inference(model, images, device):
     """Forward on the local frame shard; returns per-frame prediction arrays (numpy)."""
     images = images.contiguous().to(device)
     torch.cuda.reset_peak_memory_stats()
+    t0 = time.perf_counter()
     with torch.inference_mode():
         predictions = model(images)
     torch.cuda.synchronize()
     logger.info(
         f"[rank {dist.get_rank()}] {images.shape[1]} local frames | "
+        f"forward {time.perf_counter() - t0:.1f} s | "
         f"peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.2f} GB"
     )
     extrinsics, intrinsics = encoding_to_camera(predictions["pose_enc"], predictions["images"].shape[-2:])
