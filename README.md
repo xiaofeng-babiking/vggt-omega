@@ -213,6 +213,14 @@ implementations:
 | `all_gather_kv` (default) | All-gathers K/V to every rank, then computes local-query × global-KV attention | A single node — the gathered K/V ride the fast NVLink / NVSwitch links |
 | `ring` | Rotates K/V blocks around the ranks, computing each block with the FlashAttention kernel and merging via online-softmax (log-sum-exp); never materializes the full K/V. Each rotation is one batched isend/irecv on a **dedicated communicator** (sharing one with the all-gathers deadlocks on PCIe), posted before the block's compute so communication overlaps it | Very long sequences or multiple nodes — `O(N/world)` K/V memory (vs `O(N)` for `all_gather_kv`) and overlap-friendly communication |
 
+Measured on the full 1018-frame TUM `walking_halfsphere` sequence (640×480,
+7× A100-80GB PCIe, ~146 frames/GPU): identical metrics for both strategies;
+`ring` forward 121–126 s at **20.6 GB** peak vs `all_gather_kv` 127–130 s at
+**33.3 GB** — ring is slightly faster at full length and its memory advantage
+grows with sequence length (at 64 frames the ranking flips: 5.6 s vs 4.0 s,
+small rotations lose to one cheap gather). Crossover is around a few hundred
+frames; pick `all_gather_kv` for short sequences, `ring` for long ones.
+
 ### What is communicated
 
 Frames live in the batch dimension, so the DINOv2 patch embedding, the per-frame
