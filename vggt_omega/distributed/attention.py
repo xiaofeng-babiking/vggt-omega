@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from .process_group import all_gather_ints
+from .process_group import all_gather_ints, p2p_group_for
 from .shard import pad_seq_to
 
 
@@ -106,27 +106,48 @@ def _merge_block(out_acc, lse_acc, o_blk, lse_blk):
     return out_acc, lse_new
 
 
-def _ring_exchange(send: torch.Tensor, recv_shape, cp_group, rank, world) -> torch.Tensor:
-    """Send `send` to rank+1, receive the next block (shape `recv_shape`) from rank-1.
+def _post_ring_rotate(cur_k, cur_v, recv_len, p2p_group, rank, world):
+    """Post one non-blocking ring rotation: send the current K/V block to
+    rank+1, receive the next block (length `recv_len`) from rank-1.
 
-    Uses plain isend/irecv (portable across gloo and nccl). Non-blocking sends are
-    posted alongside the matching receives, so the ring completes without deadlock.
+    K and V travel in a single batch_isend_irecv (the unbatched form is
+    serialized by NCCL and contributed to the issue #3 deadlock), on the
+    DEDICATED p2p group. Zero-length sends/receives are skipped on both
+    endpoints — each consults the same all-gathered lengths, so the posted op
+    sequence stays rank-symmetric. Exact lengths travel (no padding/mask).
+    Returns (reqs, next_k, next_v); wait on reqs before reading next_k/next_v.
     """
     send_to = (rank + 1) % world
     recv_from = (rank - 1) % world
-    recv = send.new_empty(recv_shape)
-    send_req = dist.isend(send.contiguous(), dst=send_to, group=cp_group)
-    recv_req = dist.irecv(recv, src=recv_from, group=cp_group)
-    recv_req.wait()
-    send_req.wait()
-    return recv
+    B, H, _, Dh = cur_k.shape
+    next_k = cur_k.new_empty((B, H, recv_len, Dh))
+    next_v = cur_v.new_empty((B, H, recv_len, Dh))
+    ops = []
+    if cur_k.shape[2] > 0:
+        ops += [
+            dist.P2POp(dist.isend, cur_k, send_to, group=p2p_group),
+            dist.P2POp(dist.isend, cur_v, send_to, group=p2p_group),
+        ]
+    if recv_len > 0:
+        ops += [
+            dist.P2POp(dist.irecv, next_k, recv_from, group=p2p_group),
+            dist.P2POp(dist.irecv, next_v, recv_from, group=p2p_group),
+        ]
+    reqs = dist.batch_isend_irecv(ops) if ops else []
+    return reqs, next_k, next_v
 
 
 class RingAttention:
-    """Blockwise online-softmax attention; rotate K,V around the ring. Exact, memory-optimal.
+    """Blockwise flash/online-softmax attention; rotate K,V around the ring.
 
-    Online-softmax stats are accumulated in fp32 (matching SDPA's internal
-    accumulation) and cast back to the input dtype on return.
+    Exact (== single-rank SDPA over the global sequence, up to fp reduction
+    order) with O(local block) memory — no full score matrix and no full
+    global K/V. CUDA half precision runs each ring step through the
+    FlashAttention kernel; CPU/fp32 uses the chunked manual path. K and V
+    rotate together in one batched isend/irecv per step on a DEDICATED
+    process group (P2P sharing a communicator with the model's all_gathers
+    deadlocked on 8x PCIe — issue #3), and each step's rotation is posted
+    BEFORE that step's compute so communication overlaps it.
     """
 
     def __call__(self, q, k, v, cp_group) -> torch.Tensor:
@@ -134,33 +155,36 @@ class RingAttention:
         world = dist.get_world_size(cp_group)
         lengths = all_gather_ints(k.shape[2], cp_group, device=k.device)
 
-        B, H, Lq, D = q.shape
-        scale = D ** -0.5
-        qf = q.float()
-        m = torch.full((B, H, Lq, 1), float("-inf"), device=q.device, dtype=torch.float32)
-        l = torch.zeros((B, H, Lq, 1), device=q.device, dtype=torch.float32)
-        acc = torch.zeros((B, H, Lq, D), device=q.device, dtype=torch.float32)
+        # Mirror F.sdpa's autocast handling: q/k/v arrive fp32 (q_norm/k_norm
+        # emit fp32 under autocast); cast so the flash path can engage.
+        if q.is_cuda and torch.is_autocast_enabled("cuda"):
+            dt = torch.get_autocast_dtype("cuda")
+            q, k, v = q.to(dt), k.to(dt), v.to(dt)
+
+        B, H, Lq, Dh = q.shape
+        scale = Dh ** -0.5
+        use_flash = (
+            q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
+            and Dh % 8 == 0 and Dh <= 256
+        )
+        block_attn = _block_attn_flash if use_flash else _block_attn_manual
+
+        p2p = p2p_group_for(cp_group) if world > 1 else None
+        out = torch.zeros((B, H, Lq, Dh), device=q.device, dtype=torch.float32)
+        lse = torch.full((B, H, Lq), float("-inf"), device=q.device, dtype=torch.float32)
 
         cur_k, cur_v = k.contiguous(), v.contiguous()
         for step in range(world):
-            origin = (rank - step) % world
-            if lengths[origin] > 0 and Lq > 0:
-                s = torch.matmul(qf, cur_k.float().transpose(-1, -2)) * scale  # (B,H,Lq,Lk)
-                m_new = torch.maximum(m, s.amax(dim=-1, keepdim=True))
-                corr = torch.exp(m - m_new)
-                p = torch.exp(s - m_new)
-                l = l * corr + p.sum(dim=-1, keepdim=True)
-                acc = acc * corr + torch.matmul(p, cur_v.float())
-                m = m_new
+            if step < world - 1:  # post the next rotation; overlaps compute below
+                recv_len = lengths[(rank - step - 1) % world]
+                reqs, next_k, next_v = _post_ring_rotate(cur_k, cur_v, recv_len, p2p, rank, world)
+            if lengths[(rank - step) % world] > 0 and Lq > 0:
+                o_blk, lse_blk = block_attn(q, cur_k, cur_v, scale)
+                out, lse = _merge_block(out, lse, o_blk, lse_blk)
             if step < world - 1:
-                nxt = (rank - step - 1) % world
-                recv_shape = (B, H, lengths[nxt], D)
-                cur_k = _ring_exchange(cur_k, recv_shape, cp_group, rank, world)
-                cur_v = _ring_exchange(cur_v, recv_shape, cp_group, rank, world)
-
-        if Lq == 0:
-            return q
-        out = acc / l.clamp_min(torch.finfo(torch.float32).tiny)
+                for r in reqs:
+                    r.wait()
+                cur_k, cur_v = next_k, next_v
         return out.to(q.dtype)
 
 
