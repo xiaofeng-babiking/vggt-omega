@@ -47,6 +47,9 @@ class VGGTOmega(nn.Module):
         predictions = {
             "camera_and_register_tokens": final_tokens[:, :, :patch_token_start].contiguous(),
         }
+        if self.training:
+            # Last-layer patch tokens feed the matching loss (training only).
+            predictions["patch_tokens"] = final_tokens[:, :, patch_token_start:]
         with torch.autocast(device_type="cuda", enabled=False):
             if self.camera_head is not None:
                 predictions["pose_enc"] = self.camera_head(
