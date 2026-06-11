@@ -27,6 +27,7 @@ optim:
   warmup_frac: 0.05
   grad_clip: 1.0
   grad_compression: bf16   # halves the 4.6 GB/step gradient allreduce on PCIe
+  fused: true              # fused AdamW kernel on CUDA (silently off on CPU)
 
 loss:
   weights: {camera: 5.0, depth: 1.0, point: 0.5, match: 0.1}
@@ -52,7 +53,7 @@ data:
     num_workers: 8
     max_img_per_gpu: 24
     shuffle: false          # use inside_random to avoid large-dict shuffle OOM
-    pin_memory: false
+    pin_memory: true
     common_config:
       img_size: 512
       patch_size: 16

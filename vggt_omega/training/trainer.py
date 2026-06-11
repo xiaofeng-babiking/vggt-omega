@@ -97,10 +97,12 @@ class Trainer:
             temperature=cfg.loss.temperature,
             patch_size=int(OmegaConf.select(cfg, "model.patch_size", default=16)),
         )
+        fused = bool(OmegaConf.select(cfg, "optim.fused", default=False)) and self.device.type == "cuda"
         self.optimizer = torch.optim.AdamW(
             build_param_groups(self.model, cfg.optim.weight_decay),
             lr=cfg.optim.lr,
             betas=tuple(cfg.optim.betas),
+            fused=fused,
         )
         self.scheduler = build_warmup_cosine(
             self.optimizer, max_steps=int(cfg.run.max_steps), warmup_frac=cfg.optim.warmup_frac
