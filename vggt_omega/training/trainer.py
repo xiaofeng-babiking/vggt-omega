@@ -29,6 +29,17 @@ from vggt_omega.utils.pose_enc import encoding_to_camera
 logger = get_logger("vggt_omega.trainer")
 
 
+def resolve_comm_hook(name):
+    """Map cfg.optim.grad_compression to a DDP comm hook (None = fp32 default)."""
+    if name in (None, "none"):
+        return None
+    if name == "bf16":
+        from torch.distributed.algorithms.ddp_comm_hooks import default_hooks
+
+        return default_hooks.bf16_compress_hook
+    raise ValueError(f"unknown grad_compression {name!r} (expected 'bf16' or 'none')")
+
+
 def init_model_from_scratch(model: nn.Module) -> None:
     """Checkpoint-less init: several parameters are created with ``torch.empty``
     (LayerScale.gamma, the ViT cls/storage/mask tokens) and ``LinearKMaskedBias``
@@ -133,6 +144,9 @@ class Trainer:
                 gradient_as_bucket_view=True,
                 find_unused_parameters=False,
             )
+            hook = resolve_comm_hook(OmegaConf.select(self.cfg, "optim.grad_compression", default="none"))
+            if hook is not None:
+                model.register_comm_hook(state=None, hook=hook)
         self.model = model
 
     def _unwrapped_model(self):
