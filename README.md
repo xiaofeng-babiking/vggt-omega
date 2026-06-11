@@ -373,9 +373,28 @@ to touch:
 | `optim.lr` | `2.0e-4` | Peak LR, reached after the linear warmup (`optim.warmup_frac` = 5% of `max_steps`), then cosine-decayed to 0. Tuned for the paper's 128-GPU global batch — scale it down for small runs |
 | `loss.weights` | `{camera: 5.0, depth: 1.0, point: 0.5, match: 0.1}` | Per-term weights. `match: 0` disables the matching term and the extra patch-token return; pair it with `common_config.load_track: false` to skip dataset-side track building too |
 | `data.train.common_config.img_nums` | `[1, 24]` | Frames per sample, drawn uniformly from this range (paper Sec. 4.1) |
-| `data.train.max_img_per_gpu` | `24` | Per-GPU frame budget: a batch packs `⌊max_img_per_gpu / frames⌋` samples. Appears twice (loader arg and inside `common_config`) — keep both in sync |
+| `data.train.max_img_per_gpu` | `28` | Per-GPU frame budget: a batch packs `⌊max_img_per_gpu / frames⌋` samples. Appears twice (loader arg and inside `common_config`) — keep both in sync. Swept empirically (`python -m vggt_omega.training.sweep_capacity`); 28 leaves ~12 GiB real headroom on A100-80GB, 32 OOMs on long runs |
+| `optim.grad_compression` | `bf16` | DDP comm hook compressing the gradient allreduce to bf16 (halves the 4.6 GB/step transport on PCIe boxes); `none` for plain fp32 |
+| `optim.fused` | `true` | Fused AdamW CUDA kernel (~2× faster optimizer step); silently off on CPU |
 | `model.gradient_checkpointing` | `true` | Recompute aggregator blocks during backward: large activation-memory savings for extra compute, bit-identical math |
 | `model.checkpoint` | released 1B checkpoint | Init weights; `null` trains from scratch (see below). Override per run with `--init_checkpoint` |
+
+### Performance
+
+The training step is profiled phase-by-phase with the committed instrument:
+
+```bash
+torchrun --standalone --nproc_per_node=3 -m vggt_omega.training.profile_step \
+    --config vggt_omega/training/config/train_default.yaml
+```
+
+On 8×A100-PCIe the step is backward-bound (~72%; gradient checkpointing
+recomputes the forward) with the data pipeline fully hidden (<1%). Per-rank
+work is balanced by construction: all DDP ranks draw the same frames-per-batch
+sequence each step (rank-synchronized sampler), so no rank waits on stragglers.
+Training sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` automatically —
+the dynamic batch shapes fragment the default caching allocator badly enough
+to OOM long runs without it.
 
 ### Monitoring
 
