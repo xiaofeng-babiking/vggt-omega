@@ -40,6 +40,14 @@ def resolve_comm_hook(name):
     raise ValueError(f"unknown grad_compression {name!r} (expected 'bf16' or 'none')")
 
 
+def apply_grad_compression(ddp_model, name):
+    """Register the configured gradient-compression hook on a DDP-wrapped model."""
+    hook = resolve_comm_hook(name)
+    if hook is not None:
+        ddp_model.register_comm_hook(state=None, hook=hook)
+    return ddp_model
+
+
 def init_model_from_scratch(model: nn.Module) -> None:
     """Checkpoint-less init: several parameters are created with ``torch.empty``
     (LayerScale.gamma, the ViT cls/storage/mask tokens) and ``LinearKMaskedBias``
@@ -146,9 +154,9 @@ class Trainer:
                 gradient_as_bucket_view=True,
                 find_unused_parameters=False,
             )
-            hook = resolve_comm_hook(OmegaConf.select(self.cfg, "optim.grad_compression", default="none"))
-            if hook is not None:
-                model.register_comm_hook(state=None, hook=hook)
+            apply_grad_compression(
+                model, OmegaConf.select(self.cfg, "optim.grad_compression", default="none")
+            )
         self.model = model
 
     def _unwrapped_model(self):
@@ -289,6 +297,9 @@ class Trainer:
             "scheduler": self.scheduler.state_dict(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            # The sampler's frame-draw Generator (DynamicBatchSampler.np_rng) is
+            # intentionally NOT checkpointed: it is rebuilt from (epoch, seed) and
+            # resume restarts the loader at an epoch boundary anyway.
             "numpy_rng": np.random.get_state(),
             "python_rng": random.getstate(),
             "cfg": OmegaConf.to_container(self.cfg, resolve=True),
@@ -328,6 +339,8 @@ class Trainer:
 
         model = self._unwrapped_model()
         model.eval()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()  # release training-shape blocks before the val forward
         val_cfg = self.cfg.val
         for cfg_path in val_cfg.configures:
             vendor = os.path.splitext(os.path.basename(str(cfg_path)))[0]
@@ -379,6 +392,11 @@ class Trainer:
                             res = MonoDepthMetric(gt_depth[i], pred_depth[i], align="median").run()
                             abs_rel.append(res["abs_rel"]["mean"])
                             delta1.append(res["delta"]["delta1"])
+                except torch.OutOfMemoryError:
+                    # Validation must never kill a long training run; free the
+                    # cache and skip this sequence.
+                    torch.cuda.empty_cache()
+                    logger.warning(f"[val {vendor}] sequence {seq_index} skipped: CUDA OOM")
                 except (AssertionError, ValueError) as exc:
                     # Early-training predictions can be NaN / degenerate; skip, don't crash.
                     logger.warning(f"[val {vendor}] sequence {seq_index} skipped: {exc}")

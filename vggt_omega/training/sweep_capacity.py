@@ -7,13 +7,18 @@ and (B=cap, S=1) (dense-head peak) on synthetic 512x512 inputs (aspect 1.0 = wor
 full gradient checkpointing and optimizer state allocated, and reports peak GiB. Pick the
 largest cap with >= 8 GiB headroom and set it in train_default.yaml (BOTH places:
 data.train.max_img_per_gpu and data.train.common_config.max_img_per_gpu).
+
+Synthetic peaks omit the matching-loss path (tracks + retained last-layer patch tokens)
+and DDP bucket/allocator effects: real multi-GPU training measured ~9 GiB above the
+synthetic number at the same cap. Treat the verdicts as a lower bound and confirm the
+chosen cap with a short real run (watch perf/peak_mem_gb in TensorBoard).
 """
 import argparse
 
 import torch
 
 from vggt_omega.models import VGGTOmega
-from vggt_omega.training.losses import TrainLossComputer, normalize_gt_into_first_camera  # noqa: F401
+from vggt_omega.training.losses import TrainLossComputer
 from vggt_omega.training.optim import build_param_groups
 from vggt_omega.training.trainer import init_model_from_scratch
 
@@ -48,6 +53,15 @@ def main(argv=None):
     model = model.to(device).train()
     opt = torch.optim.AdamW(build_param_groups(model, 0.05), lr=1e-8, fused=True)
     lc = TrainLossComputer(weights={"camera": 5.0, "depth": 1.0, "point": 0.5, "match": 0.0})
+
+    # Prime the lazily-allocated AdamW state (exp_avg/exp_avg_sq, ~8.5 GiB fp32 at
+    # 1B params) so the FIRST measured shape already sees steady-state memory —
+    # without this the first reading under-reports by the full state size.
+    batch = _synth_batch(1, 1, args.img_size, device)
+    preds = model(batch["images"])
+    lc(preds, batch, (args.img_size, args.img_size))["total"].backward()
+    opt.step()
+    opt.zero_grad(set_to_none=True)
 
     total = torch.cuda.get_device_properties(device).total_memory / 2**30
     print(f"GPU total {total:.1f} GiB | shapes: (1, cap) and (cap, 1) at {args.img_size}^2")

@@ -20,6 +20,12 @@ import os
 import sys
 import time
 
+# The dynamic batcher changes tensor shapes every step; the default caching
+# allocator fragments badly under that churn (observed: 15+ GiB reserved but
+# unallocated at step 76 -> OOM). Expandable segments reclaim it. Must be set
+# before the first CUDA allocation.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import gflags
 from omegaconf import OmegaConf
 

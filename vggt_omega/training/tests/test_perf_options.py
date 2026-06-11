@@ -37,3 +37,23 @@ def test_fused_adamw_falls_back_on_cpu(tmp_path):
         assert fused
     else:
         assert not fused
+
+
+def test_apply_grad_compression_registers_configured_hook():
+    from torch.distributed.algorithms.ddp_comm_hooks import default_hooks
+
+    from vggt_omega.training.trainer import apply_grad_compression
+
+    class StubDDP:
+        def __init__(self):
+            self.hook = None
+
+        def register_comm_hook(self, state, hook):
+            self.hook = hook
+
+    ddp = StubDDP()
+    apply_grad_compression(ddp, "bf16")
+    assert ddp.hook is default_hooks.bf16_compress_hook
+    ddp = StubDDP()
+    apply_grad_compression(ddp, "none")
+    assert ddp.hook is None

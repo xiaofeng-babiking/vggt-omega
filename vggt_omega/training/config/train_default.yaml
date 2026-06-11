@@ -51,7 +51,7 @@ data:
   train:
     _target_: vggt_omega.datasets.dynamic_dataloader.DynamicTorchDataset
     num_workers: 8
-    max_img_per_gpu: 24
+    max_img_per_gpu: 28   # swept 2026-06-11 (primed tool): 32 OOMed in a real run at step 76 via allocator fragmentation; 28 leaves ~9 GiB true margin with expandable_segments
     shuffle: false          # use inside_random to avoid large-dict shuffle OOM
     pin_memory: true
     common_config:
@@ -71,7 +71,7 @@ data:
       get_nearby: true
       load_depth: true
       img_nums: [1, 24]
-      max_img_per_gpu: 24
+      max_img_per_gpu: 28
       allow_duplicate_img: true
       repeat_batch: false
       augs:
