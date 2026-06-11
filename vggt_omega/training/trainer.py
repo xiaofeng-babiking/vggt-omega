@@ -76,6 +76,18 @@ def init_model_from_scratch(model: nn.Module) -> None:
                 p.normal_(std=0.02)
 
 
+def load_encoder_weights(model: nn.Module, path: str) -> int:
+    """Restore ONLY the DINOv3 image encoder (``aggregator.patch_embed.*``) from a
+    full VGGT-Omega state dict, leaving every other block at its current init.
+    Returns the number of restored tensors."""
+    sd = torch.load(path, map_location="cpu")
+    enc = {k: v for k, v in sd.items() if k.startswith("aggregator.patch_embed.")}
+    if not enc:
+        raise ValueError(f"{path!r} has no aggregator.patch_embed.* keys")
+    model.load_state_dict(enc, strict=False)
+    return len(enc)
+
+
 class Trainer:
     """Build everything from one OmegaConf cfg; ``fit()`` runs to ``run.max_steps``.
 
@@ -145,6 +157,10 @@ class Trainer:
             model.load_state_dict(torch.load(self.cfg.model.checkpoint, map_location="cpu"))
         else:
             init_model_from_scratch(model)
+            encoder_src = OmegaConf.select(self.cfg, "model.init_encoder_from")
+            if encoder_src:
+                n = load_encoder_weights(model, str(encoder_src))
+                logger.info(f"restored {n} encoder tensors from {encoder_src}")
         model.aggregator.gradient_checkpointing = bool(self.cfg.model.gradient_checkpointing)
         model = model.to(self.device)
         if self.world_size > 1:

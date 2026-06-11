@@ -57,3 +57,45 @@ def test_apply_grad_compression_registers_configured_hook():
     ddp = StubDDP()
     apply_grad_compression(ddp, "none")
     assert ddp.hook is None
+
+
+def test_load_encoder_weights_restores_only_patch_embed(tmp_path):
+    import torch
+
+    from vggt_omega.models import VGGTOmega
+    from vggt_omega.training.trainer import init_model_from_scratch, load_encoder_weights
+
+    torch.manual_seed(0)
+    source = VGGTOmega(embed_dim=64)
+    init_model_from_scratch(source)
+    path = tmp_path / "source.pt"
+    torch.save(source.state_dict(), path)
+
+    torch.manual_seed(1)
+    target = VGGTOmega(embed_dim=64)
+    init_model_from_scratch(target)
+    src_qkv = source.aggregator.frame_blocks[0].attn.qkv.weight
+    assert not torch.equal(target.aggregator.frame_blocks[0].attn.qkv.weight, src_qkv)
+
+    n = load_encoder_weights(target, str(path))
+    assert n > 0
+    for (kt, vt), (ks, vs) in zip(
+        target.aggregator.patch_embed.state_dict().items(),
+        source.aggregator.patch_embed.state_dict().items(),
+    ):
+        assert kt == ks and torch.equal(vt, vs), kt
+    # everything outside the encoder stays at the target's own random init
+    assert not torch.equal(target.aggregator.frame_blocks[0].attn.qkv.weight, src_qkv)
+
+
+def test_load_encoder_weights_rejects_checkpoint_without_encoder(tmp_path):
+    import pytest
+    import torch
+
+    from vggt_omega.models import VGGTOmega
+    from vggt_omega.training.trainer import load_encoder_weights
+
+    path = tmp_path / "junk.pt"
+    torch.save({"foo": torch.zeros(1)}, path)
+    with pytest.raises(ValueError, match="aggregator.patch_embed"):
+        load_encoder_weights(VGGTOmega(embed_dim=64), str(path))
