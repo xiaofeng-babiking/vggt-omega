@@ -147,6 +147,11 @@ class DynamicBatchSampler(Sampler):
         self.sampler.set_epoch(epoch)
         self.epoch = epoch
         self.rng.seed(epoch * 100)
+        # Rank-independent stream for the per-batch frame-count draw: every DDP
+        # rank must see the same (image_num, aspect) sequence so per-step work is
+        # balanced. The global numpy RNG is rank-seeded (and shifts whenever any
+        # other code consumes it), so it must not be used here.
+        self.np_rng = np.random.default_rng(epoch * 100 + 1)
 
     def __iter__(self):
         """
@@ -160,7 +165,7 @@ class DynamicBatchSampler(Sampler):
         while True:
             try:
                 # Sample random image number and aspect ratio
-                random_image_num = int(np.random.choice(self.possible_nums, p=self.normalized_weights))
+                random_image_num = int(self.np_rng.choice(self.possible_nums, p=self.normalized_weights))
                 random_aspect_ratio = round(self.rng.uniform(self.aspect_ratio_range[0], self.aspect_ratio_range[1]), 2)
 
                 # Update sampler parameters
