@@ -23,6 +23,8 @@ uv.lock
 
 .mcp.json
 
+.agent_view/
+
 docs/
 
 .dataset_surveys/

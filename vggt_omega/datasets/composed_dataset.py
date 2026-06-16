@@ -7,6 +7,7 @@
 from abc import ABC
 
 from hydra.utils import instantiate
+import logging
 import torch
 import random
 import numpy as np
@@ -71,6 +72,10 @@ class ComposedDataset(Dataset, ABC):
         self.load_track = common_config.load_track
         # Number of point tracks to include per sequence
         self.track_num = common_config.track_num
+        # Fraction of on-the-fly tracks that should be negative pairs
+        self.track_neg_ratio = common_config.get("track_neg_ratio", 0.5)
+        # Training-only resample attempts when a raw fetch raises (dirty data)
+        self.fetch_retries = common_config.get("fetch_retries", 3)
 
         # --- Mode Settings ---
         # Whether the dataset is being used for training (affects augmentations)
@@ -106,8 +111,21 @@ class ComposedDataset(Dataset, ABC):
             seq_idx = idx_tuple[0] if isinstance(idx_tuple, tuple) else idx_tuple
             idx_tuple = (seq_idx, self.fixed_num_images, self.fixed_aspect_ratio)
 
-        # Retrieve the raw data batch from the appropriate base dataset
-        batch = self.base_dataset[idx_tuple]
+        # Retrieve the raw data batch from the appropriate base dataset.
+        # During training a dirty frame (e.g. a corrupt npz) must not kill the
+        # run: with inside_random every retry redraws a fresh vendor/sequence,
+        # so resample a few times before giving up. Eval paths stay strict.
+        attempts = 1 + (self.fetch_retries if self.training else 0)
+        for attempt in range(1, attempts + 1):
+            try:
+                batch = self.base_dataset[idx_tuple]
+                break
+            except Exception as exc:
+                if attempt == attempts:
+                    raise
+                logging.warning(
+                    f"sample fetch failed (attempt {attempt}/{attempts}), resampling: {exc}"
+                )
         return self._tensorize(batch)
 
     @staticmethod
@@ -174,7 +192,7 @@ class ComposedDataset(Dataset, ABC):
 
         # --- Track Processing (if enabled) ---
         if self.load_track:
-            if batch["tracks"] is not None:
+            if batch.get("tracks") is not None:
                 # Use pre-computed tracks from the dataset
                 tracks = torch.from_numpy(self._stacked(batch["tracks"]).astype(np.float32, copy=False))
                 track_vis_mask = torch.from_numpy(self._stacked(batch["track_masks"]).astype(bool, copy=False))
@@ -201,7 +219,8 @@ class ComposedDataset(Dataset, ABC):
                 # This creates synthetic tracks based on the 3D information available
                 tracks, track_vis_mask, track_positive_mask = build_tracks_by_depth(
                     extrinsics, intrinsics, world_points, depths, point_masks, images,
-                    target_track_num=self.track_num, seq_name=seq_name
+                    target_track_num=self.track_num, neg_ratio=self.track_neg_ratio,
+                    seq_name=seq_name
                 )
 
             # Add track information to the sample dictionary

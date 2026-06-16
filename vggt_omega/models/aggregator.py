@@ -6,6 +6,7 @@
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
 from vggt_omega.models.layers import Mlp, RopePositionEmbedding, SelfAttentionBlock
 from vggt_omega.models.layers.vision_transformer import DinoVisionTransformer
@@ -77,6 +78,7 @@ class Aggregator(nn.Module):
 
         self.depth = depth
         self.patch_size = patch_size
+        self.gradient_checkpointing = False
         self.cached_layer_indices = set(cached_layer_indices)
         self.camera_token = nn.Parameter(torch.empty(1, 2, 1, embed_dim))
         self.register_token = nn.Parameter(torch.empty(1, 2, num_register_tokens, embed_dim))
@@ -126,26 +128,51 @@ class Aggregator(nn.Module):
                 rope_cos.to(device=patch_tokens.device, dtype=torch.float32),
             )
 
+        use_ckpt = self.gradient_checkpointing and self.training and torch.is_grad_enabled()
         outputs = []
         for block_idx in range(self.depth):
-            tokens, frame_tokens = self._run_frame_block(
-                tokens,
-                batch_size,
-                num_frames,
-                num_tokens,
-                embed_dim,
-                block_idx,
-                frame_rope,
-            )
-            tokens = self._run_inter_frame_attention_block(
-                tokens,
-                batch_size,
-                num_frames,
-                num_tokens,
-                embed_dim,
-                block_idx,
-                self.inter_frame_attention_types[block_idx],
-            )
+            if use_ckpt:
+                tokens, frame_tokens = torch.utils.checkpoint.checkpoint(
+                    self._run_frame_block,
+                    tokens,
+                    batch_size,
+                    num_frames,
+                    num_tokens,
+                    embed_dim,
+                    block_idx,
+                    frame_rope,
+                    use_reentrant=False,
+                )
+                tokens = torch.utils.checkpoint.checkpoint(
+                    self._run_inter_frame_attention_block,
+                    tokens,
+                    batch_size,
+                    num_frames,
+                    num_tokens,
+                    embed_dim,
+                    block_idx,
+                    self.inter_frame_attention_types[block_idx],
+                    use_reentrant=False,
+                )
+            else:
+                tokens, frame_tokens = self._run_frame_block(
+                    tokens,
+                    batch_size,
+                    num_frames,
+                    num_tokens,
+                    embed_dim,
+                    block_idx,
+                    frame_rope,
+                )
+                tokens = self._run_inter_frame_attention_block(
+                    tokens,
+                    batch_size,
+                    num_frames,
+                    num_tokens,
+                    embed_dim,
+                    block_idx,
+                    self.inter_frame_attention_types[block_idx],
+                )
             if block_idx in self.cached_layer_indices:
                 outputs.append(torch.cat([frame_tokens, tokens], dim=-1))
             else:
