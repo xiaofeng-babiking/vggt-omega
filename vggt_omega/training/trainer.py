@@ -309,13 +309,14 @@ class Trainer:
         )
         state = {
             "step": step,
+            "epoch": self._epoch,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             # The sampler's frame-draw Generator (DynamicBatchSampler.np_rng) is
-            # intentionally NOT checkpointed: it is rebuilt from (epoch, seed) and
-            # resume restarts the loader at an epoch boundary anyway.
+            # rebuilt deterministically from the restored epoch in get_loader, so
+            # it is not stored here.
             "numpy_rng": np.random.get_state(),
             "python_rng": random.getstate(),
             "cfg": OmegaConf.to_container(self.cfg, resolve=True),
@@ -330,8 +331,13 @@ class Trainer:
     def resume(self, trainer_ckpt_path: str):
         state = torch.load(trainer_ckpt_path, map_location="cpu", weights_only=False)
         model_path = trainer_ckpt_path.replace("trainer_step", "model_step")
-        if os.path.exists(model_path):
-            self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
+        if not os.path.exists(model_path):
+            # A sidecar without its paired weights is unrecoverable: restoring the
+            # optimizer/scheduler against the init weights silently diverges.
+            raise FileNotFoundError(
+                f"missing model checkpoint {model_path} for sidecar {trainer_ckpt_path}"
+            )
+        self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         torch.set_rng_state(state["torch_rng"])
@@ -341,7 +347,8 @@ class Trainer:
         np.random.set_state(state["numpy_rng"])
         random.setstate(state["python_rng"])
         self.global_step = int(state["step"])
-        logger.info(f"resumed from {trainer_ckpt_path} at step {self.global_step}")
+        self._epoch = int(state.get("epoch", 0))
+        logger.info(f"resumed from {trainer_ckpt_path} at step {self.global_step} (epoch {self._epoch})")
 
     # --- validation -----------------------------------------------------------------
     def _validate(self, step):

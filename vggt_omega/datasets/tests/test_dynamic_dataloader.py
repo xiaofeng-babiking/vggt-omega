@@ -55,3 +55,48 @@ def test_image_num_marginal_stays_uniform():
     assert counts.min() > 0
     # uniform expectation 200/bin; allow generous sampling noise
     assert counts.max() / counts.min() < 1.6
+
+
+def test_set_epoch_reseeds_frame_draws_so_epochs_differ():
+    # Regression for the frozen-schedule bug: get_loader must call
+    # batch_sampler.set_epoch(epoch). Reseeding the SAME sampler to a new epoch
+    # must change the image_num sequence; reseeding to the same epoch must not.
+    s = _make_sampler(rank=0, global_np_seed=1, epoch=0)
+    s.set_epoch(0)
+    e0 = _draw_params(s, 50)
+    s.set_epoch(1)
+    e1 = _draw_params(s, 50)
+    s.set_epoch(0)
+    e0_again = _draw_params(s, 50)
+    assert e0 != e1            # epoch advanced the stream
+    assert e0 == e0_again      # same epoch is reproducible
+
+
+def test_get_loader_calls_batch_sampler_set_epoch():
+    # Pin the routing the frozen-schedule bug missed: get_loader must reseed the
+    # batch sampler (not only the inner DistributedSampler).
+    from vggt_omega.datasets.dynamic_dataloader import DynamicTorchDataset
+
+    dtd = object.__new__(DynamicTorchDataset)
+    seen = []
+
+    class _Spy:
+        def set_epoch(self, e):
+            seen.append(e)
+
+    dtd.sampler = _Spy()
+    dtd.batch_sampler = _Spy()
+    dtd.dataset = object()
+    dtd.num_workers = 0
+    dtd.pin_memory = False
+    dtd.collate_fn = None
+    dtd.persistent_workers = False
+    dtd.seed = 42
+    dtd.worker_init_fn = None
+    # batch_sampler is also the DataLoader's batch_sampler; a dummy iterable is fine
+    dtd.batch_sampler = _Spy()
+    try:
+        dtd.get_loader(3)
+    except Exception:
+        pass  # DataLoader construction may fail on the stub; we only assert the call
+    assert 3 in seen

@@ -37,7 +37,7 @@ loss:
 model:
   embed_dim: 1024
   patch_size: 16
-  checkpoint: /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
   gradient_checkpointing: true
 
 val:
@@ -90,7 +90,7 @@ data:
       dataset_configs:
         - _target_: vggt_omega.datasets.vendors.arkitscenes.ArkitScenesDataset
           split: train
-          ARKITSCENES_DIR: /jfs/Data_4DFF/train_data/arkitscenes
+          ARKITSCENES_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/arkitscenes
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -100,7 +100,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.blendedmvs.BlendedMvsDataset
           split: train
-          BLENDEDMVS_DIR: /jfs/Data_4DFF/train_data/blendedmvs
+          BLENDEDMVS_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/blendedmvs
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -108,7 +108,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.co3d.Co3dDataset
           split: train
-          CO3D_DIR: /jfs/Data_4DFF/train_data/co3d
+          CO3D_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/co3d
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -117,7 +117,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.dl3dv.Dl3dvDataset
           split: train
-          DL3DV_DIR: /jfs/Data_4DFF/train_data/dl3dv
+          DL3DV_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/dl3dv
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -126,7 +126,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.dynamic_replica.DynamicReplicaDataset
           split: train
-          DYNAMIC_REPLICA_DIR: /jfs/Data_4DFF/train_data/dynamic_replica_data
+          DYNAMIC_REPLICA_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/dynamic_replica_data
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -136,7 +136,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.hypersim.HypersimDataset
           split: train
-          HYPERSIM_DIR: /jfs/Data_4DFF/train_data/hypersim
+          HYPERSIM_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/hypersim
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -146,7 +146,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.megadepth.MegaDepthDataset
           split: train
-          MEGADEPTH_DIR: /jfs/Data_4DFF/train_data/megadepth
+          MEGADEPTH_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/megadepth
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -155,7 +155,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.mvs_synth.MvsSynthDataset
           split: train
-          MVS_SYNTH_DIR: /jfs/Data_4DFF/train_data/mvs_synth
+          MVS_SYNTH_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/mvs_synth
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -164,7 +164,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.omniobject3d.OmniObject3dDataset
           split: train
-          OMNIOBJECT3D_DIR: /jfs/Data_4DFF/train_data/omniobject3d
+          OMNIOBJECT3D_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/omniobject3d
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -173,7 +173,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.pointodyssey.PointOdysseyDataset
           split: train
-          POINTODYSSEY_DIR: /jfs/Data_4DFF/train_data/pointodyssey
+          POINTODYSSEY_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/pointodyssey
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -182,7 +182,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.scannet.ScannetDataset
           split: train
-          SCANNET_DIR: /jfs/Data_4DFF/train_data/scannet
+          SCANNET_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/scannet
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -194,7 +194,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.spring.SpringDataset
           split: train
-          SPRING_DIR: /jfs/Data_4DFF/train_data/spring
+          SPRING_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/spring
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -203,7 +203,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.tartanair.TartanAirDataset
           split: train
-          TARTANAIR_DIR: /jfs/Data_4DFF/train_data/tartanair
+          TARTANAIR_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/tartanair
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -214,7 +214,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.vkitti.VkittiDataset
           split: train
-          VKITTI_DIR: /jfs/Data_4DFF/train_data/vkitti
+          VKITTI_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/vkitti
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -224,7 +224,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.waymo.WaymoDataset
           split: train
-          WAYMO_DIR: /jfs/Data_4DFF/train_data/waymo
+          WAYMO_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/waymo
           sequences: ["*"]
           len_train: 100000
           len_test: 10000
@@ -235,7 +235,7 @@ data:
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.wildrgbd.WildRgbdDataset
           split: train
-          WILDRGBD_DIR: /jfs/Data_4DFF/train_data/wildrgbd
+          WILDRGBD_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/wildrgbd
           sequences: ["*"]
           len_train: 100000
           len_test: 10000

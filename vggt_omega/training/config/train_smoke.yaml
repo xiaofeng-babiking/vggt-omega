@@ -30,7 +30,7 @@ loss:
 model:
   embed_dim: 1024
   patch_size: 16
-  checkpoint: /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
   gradient_checkpointing: true
 
 val:
@@ -80,7 +80,7 @@ data:
         - _target_: vggt_omega.datasets.vendors.tum.TumDataset
           split: train
           # Machine-specific path — override for your environment.
-          TUM_DIR: /jfs/guibiao/streamVGGT/data/eval/tum
+          TUM_DIR: ${oc.env:VGGT_EVAL_ROOT,/jfs/guibiao/streamVGGT/data/eval}/tum
           sequences: ["*"]
           len_train: 100000
           expand_ratio: 8

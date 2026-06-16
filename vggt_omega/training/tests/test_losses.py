@@ -102,3 +102,50 @@ def test_depth_loss_gradient_term_sees_sign_flips():
     loss = depth_loss(pred, conf, gt, valid, alpha=0.0)
     # data term: mean((1 + 1/5) * 1) = 1.2; gradient term: |(-1) - (+1)| = 2
     assert torch.allclose(loss, torch.tensor(3.2), atol=1e-6)
+
+
+# --- Exact-value tests (pin conventions; would catch the camera-mean and
+# point-L1 regressions that ordering-only checks miss) ---
+
+def test_camera_loss_is_per_frame_l1_norm_not_per_component_mean():
+    # pred-gt = 0.1 on every one of the 9 components, B=1 S=2.
+    # Paper L_cam = mean_BS( sum_9 |.| ) = 0.1*9 = 0.9.  The per-component mean
+    # (the old bug) would give 0.1 — exactly 1/9.
+    gt = torch.zeros(1, 2, 9)
+    pred = gt + 0.1
+    assert torch.allclose(camera_loss(pred, gt), torch.tensor(0.9), atol=1e-6)
+
+
+def test_point_loss_residual_is_l2_norm_over_xyz():
+    # One frame, 1x1 image, pred point off GT by (3,4,0): L2 = 5, L1 would be 7.
+    # conf=1, alpha=0, gt_depth=1 -> data weight (1+1/1)=2 -> data term = 2*5 = 10.
+    # Build a pred depth+cam that unprojects to gt+(3,4,0). Simpler: drive the
+    # shared _aleatoric_terms via depth_loss with a 3-channel residual is not
+    # exposed, so assert the magnitude convention through point_loss end-to-end
+    # is L2 by comparing an axis-spread error to an axis-aligned one of equal L1.
+    import torch as _t
+    from vggt_omega.training.losses import _aleatoric_terms
+    valid = _t.ones(1, 1, 1, 1, dtype=_t.bool)
+    gt_depth = _t.ones(1, 1, 1, 1)
+    conf = _t.ones(1, 1, 1, 1)
+    spread = _t.tensor([3.0, 4.0, 0.0]).reshape(1, 1, 1, 1, 3)   # L2=5, L1=7
+    axis = _t.tensor([5.0, 0.0, 0.0]).reshape(1, 1, 1, 1, 3)     # L2=5, L1=5
+    l_spread = _aleatoric_terms(spread, conf, gt_depth, valid, alpha=0.0)
+    l_axis = _aleatoric_terms(axis, conf, gt_depth, valid, alpha=0.0)
+    assert torch.allclose(l_spread, l_axis, atol=1e-6)           # equal L2 -> equal loss
+    assert torch.allclose(l_spread, torch.tensor(10.0), atol=1e-6)  # 2*(1+1/1... )=2*5
+
+
+def test_aleatoric_data_term_weight_and_alpha_exact():
+    from vggt_omega.training.losses import _aleatoric_terms
+    # depth residual e=0.5 everywhere, gt_depth D=2 -> weight (1+1/2)=1.5,
+    # conf c=2 -> data = c*w*|e| = 2*1.5*0.5 = 1.5; grad term 0 (uniform e);
+    # reg = -alpha*log(c). With alpha=0.2: reg = -0.2*log(2).
+    e = torch.full((1, 1, 2, 2), 0.5)
+    D = torch.full((1, 1, 2, 2), 2.0)
+    c = torch.full((1, 1, 2, 2), 2.0)
+    valid = torch.ones(1, 1, 2, 2, dtype=torch.bool)
+    import math
+    expected = 1.5 + 0.0 - 0.2 * math.log(2.0)
+    assert torch.allclose(_aleatoric_terms(e, c, D, valid, alpha=0.2),
+                          torch.tensor(expected), atol=1e-6)

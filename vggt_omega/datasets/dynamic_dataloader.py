@@ -67,8 +67,11 @@ class DynamicTorchDataset(ABC):
     def get_loader(self, epoch):
         print("Building dynamic dataloader with epoch:", epoch)
 
-        # Set the epoch for the sampler
-        self.sampler.set_epoch(epoch)
+        # Reseed the batch sampler per epoch (it forwards to the inner
+        # DistributedSampler and reseeds its frame-count Generator). Without this
+        # np_rng stays frozen at its construction seed and every epoch replays
+        # the identical image_num sequence.
+        self.batch_sampler.set_epoch(epoch)
         if hasattr(self.dataset, "epoch"):
             self.dataset.epoch = epoch
         if hasattr(self.dataset, "set_epoch"):

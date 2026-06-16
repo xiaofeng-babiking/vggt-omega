@@ -26,9 +26,13 @@ def normalize_gt_into_first_camera(extrinsics, depths, world_points, point_masks
     new_ext = (flat @ first_c2w[:, None])[:, :, :3]
     R0, t0 = extrinsics[:, 0, :3, :3], extrinsics[:, 0, :3, 3]
     new_wp = torch.einsum("bij,bshwj->bshwi", R0, world_points) + t0[:, None, None, None]
-    dist = new_wp.norm(dim=-1)
-    msum = point_masks.sum(dim=(1, 2, 3))
-    point_scale = (dist * point_masks).sum(dim=(1, 2, 3)) / msum.clamp(min=1)
+    # Only finite, masked points count toward the scale. inf/NaN in world_points
+    # (e.g. a bad GT pixel) would otherwise survive `inf * 0 = NaN` through the
+    # mask and the sum, poisoning the scale and the whole sample's losses.
+    finite = point_masks & torch.isfinite(new_wp).all(dim=-1)
+    dist = torch.where(finite, new_wp.norm(dim=-1), torch.zeros_like(new_wp[..., 0]))
+    msum = finite.sum(dim=(1, 2, 3))
+    point_scale = dist.sum(dim=(1, 2, 3)) / msum.clamp(min=1)
     # Samples without any valid point (depth-less vendors like DL3DV) would
     # otherwise clamp to eps and explode the camera GT by 1/eps; fall back to
     # the mean camera-center distance, and to 1.0 (no scaling) if that is also
@@ -40,7 +44,11 @@ def normalize_gt_into_first_camera(extrinsics, depths, world_points, point_masks
     sview = scale[:, None, None, None]
     new_ext = new_ext.clone()
     new_ext[..., 3] = new_ext[..., 3] / scale[:, None, None]
-    return new_ext, depths / sview, new_wp / sview[..., None], scale
+    # Zero any non-finite GT so it can never leak into the loss (the pixels are
+    # masked out anyway; this just stops inf/NaN from propagating through it).
+    out_depths = torch.nan_to_num(depths / sview)
+    out_wp = torch.nan_to_num(new_wp / sview[..., None])
+    return new_ext, out_depths, out_wp, scale
 
 
 def unproject_depth(depth, extrinsics, intrinsics):
@@ -69,9 +77,12 @@ def unproject_depth(depth, extrinsics, intrinsics):
 
 
 def camera_loss(pred_pose_enc, gt_pose_enc):
-    """L1 over the 9-D pose encoding, mean over (B, S). GT must come from
-    normalized (first-camera-anchored) extrinsics."""
-    return (pred_pose_enc - gt_pose_enc).abs().mean()
+    """Paper L_cam = Σ_i ‖ĝ_i − g_i‖_1: the ℓ1 norm of each frame's 9-D encoding
+    (sum over the 9 components), averaged over (B, S). Averaging over the 9
+    components instead would be 9× smaller and silently de-weight the
+    highest-weighted term against the per-pixel depth/point losses. GT must come
+    from normalized (first-camera-anchored) extrinsics."""
+    return (pred_pose_enc - gt_pose_enc).abs().sum(dim=-1).mean()
 
 
 def _masked_mean(x, mask):
@@ -83,16 +94,18 @@ def _aleatoric_terms(err, conf, gt_depth, valid, alpha, depth_clamp=1e-3):
 
     err (B,S,H,W) or (B,S,H,W,C) = SIGNED residual (the gradient term must see
     sign flips: |grad e| >= |grad |e||), conf (B,S,H,W), gt_depth (B,S,H,W) in
-    NORMALIZED units, valid (B,S,H,W) bool.
+    NORMALIZED units, valid (B,S,H,W) bool. The per-element residual magnitude is
+    the L2 norm over channels — identical to |e| for depth (C=1), the paper's
+    ‖e‖ for the 3-channel point residual (L1 would over-weight multi-axis error).
     """
     if err.dim() == 4:
         err = err.unsqueeze(-1)
-    err_abs = err.abs().sum(dim=-1)
+    err_mag = err.norm(dim=-1)
     w = 1.0 + 1.0 / gt_depth.clamp(min=depth_clamp)
-    data = _masked_mean(conf * w * err_abs, valid)
-    gx = (err[:, :, :, 1:] - err[:, :, :, :-1]).abs().sum(dim=-1)
+    data = _masked_mean(conf * w * err_mag, valid)
+    gx = (err[:, :, :, 1:] - err[:, :, :, :-1]).norm(dim=-1)
     mx = valid[..., :, 1:] & valid[..., :, :-1]
-    gy = (err[:, :, 1:] - err[:, :, :-1]).abs().sum(dim=-1)
+    gy = (err[:, :, 1:] - err[:, :, :-1]).norm(dim=-1)
     my = valid[..., 1:, :] & valid[..., :-1, :]
     grad = _masked_mean(conf[..., :, :-1] * gx, mx) + _masked_mean(conf[..., :-1, :] * gy, my)
     reg = -alpha * _masked_mean(torch.log(conf.clamp(min=1e-6)), valid)

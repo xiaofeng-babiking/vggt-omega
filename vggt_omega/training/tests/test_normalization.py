@@ -92,3 +92,22 @@ def test_normalize_scale_static_single_frame_is_identity_scale():
     no_points = torch.zeros_like(mask)
     _, _, _, scale = normalize_gt_into_first_camera(ext, dep, wp, no_points)
     assert torch.allclose(scale, torch.ones(1))         # S=1: cam-center scale is 0 -> 1.0 fallback
+
+
+def test_normalize_ignores_nonfinite_masked_points():
+    # An inf in world_points at a masked-out pixel must not poison the scale
+    # (inf*0 = NaN survives the mask) or leak NaN into the normalized GT.
+    import torch
+    from vggt_omega.training.losses import normalize_gt_into_first_camera
+    from vggt_omega.training.tests.conftest import _random_consistent_scene
+
+    ext, dep, wp, mask = _random_consistent_scene(B=1, S=3)
+    wp = wp.clone()
+    mask = mask.clone()
+    wp[0, 1, 0, 0] = float("inf")   # bad GT point...
+    mask[0, 1, 0, 0] = False        # ...that is masked out
+    n_ext, n_dep, n_wp, scale = normalize_gt_into_first_camera(ext, dep, wp, mask)
+    assert torch.isfinite(scale).all()
+    assert torch.isfinite(n_ext).all()
+    assert torch.isfinite(n_dep).all()
+    assert torch.isfinite(n_wp[mask]).all()
