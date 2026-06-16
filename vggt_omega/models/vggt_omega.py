@@ -48,6 +48,8 @@ class VGGTOmega(nn.Module):
             "camera_and_register_tokens": final_tokens[:, :, :patch_token_start].contiguous(),
         }
         if return_last_patch_tokens:
+            # Last-layer patch tokens feed the matching loss; opt-in so eval/
+            # inference forwards skip the extra tensor (the trainer passes the flag).
             predictions["patch_tokens"] = final_tokens[:, :, patch_token_start:]
         with torch.autocast(device_type="cuda", enabled=False):
             if self.camera_head is not None:

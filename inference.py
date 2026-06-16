@@ -90,6 +90,12 @@ gflags.DEFINE_integer(
     5_000_000,
     "Cap on exported point-cloud size (the fused cloud is a visualization, not scored).",
 )
+gflags.DEFINE_integer(
+    "loader_workers",
+    -1,
+    "Thread workers for parallel frame loading in get_sample: -1 = auto "
+    "(min(32, cores) / local ranks), 0 or 1 = serial.",
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -239,11 +245,15 @@ def resolve_frame_ids(dataset: ComposedDataset, seq_index: int, num_frames: int)
 
 def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
     """Training-identical tensorized sample for ``frame_ids`` of one sequence
-    (images ``(S,3,H,W)`` in ``[0,1]`` + the full GT modality set)."""
+    (images ``(S,3,H,W)`` in ``[0,1]`` + the full GT modality set). Frames load
+    on ``--loader_workers`` threads (-1 = auto, <=1 = serial)."""
     t_load = time.time()
     native_h, native_w = dataset.native_image_size(seq_index)
     aspect_ratio = min(native_h, native_w) / max(native_h, native_w)
-    sample = dataset.get_sample(seq_index, ids=frame_ids, aspect_ratio=aspect_ratio)
+    num_workers = None if FLAGS.loader_workers < 0 else FLAGS.loader_workers
+    sample = dataset.get_sample(
+        seq_index, ids=frame_ids, aspect_ratio=aspect_ratio, num_workers=num_workers
+    )
     logger.info(f"loaded {len(frame_ids)} frames in {time.time() - t_load:.1f}s")
     return sample
 
