@@ -69,6 +69,8 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as _Rotation
 
+from vggt_omega.utils.rotation import mat_to_quat as _mat_to_quat, quat_to_mat as _quat_to_mat
+
 # ----------------------------------------------------------------------------- #
 # BaseSE3Pose — the abstract, backend-agnostic SE(3) value type
 # ----------------------------------------------------------------------------- #
@@ -542,3 +544,262 @@ class NumpySE3Pose(BaseSE3Pose):
             return np.eye(3) - 0.5 * K + (K @ K) / 12.0
         c = 1.0 / theta**2 - (1.0 + np.cos(theta)) / (2.0 * theta * np.sin(theta))
         return np.eye(3) - 0.5 * K + c * (K @ K)
+
+
+# ----------------------------------------------------------------------------- #
+# TorchSE3Pose — differentiable, device/dtype-aware backend on torch tensors
+# ----------------------------------------------------------------------------- #
+
+
+class TorchSE3Pose(BaseSE3Pose):
+    """torch backend: stores ``(quat xyzw, translation)`` as tensors and keeps every
+    op differentiable and device-aware. Reuses ``utils.rotation`` for the
+    quaternion<->matrix conversions and hand-rolls the SE(3)-specific math. Inherits
+    the derived surface (``relative`` / ``normalize`` / ``boxplus`` / ``boxminus`` /
+    ``interpolate`` / operators) from :class:`BaseSE3Pose`.
+
+    dtype policy: a tensor input keeps its own dtype/device (so float32 network
+    outputs stay float32 with autograd intact); array-like input defaults to
+    float64 for geometric precision. ``identity`` defaults to float64.
+    """
+
+    _EPS = 1e-8  # small-angle threshold for the so(3) Taylor branches
+
+    def __init__(
+        self,
+        quat: torch.Tensor,
+        trans: Optional[torch.Tensor] = None,
+        *,
+        normalize: bool = True,
+    ) -> None:
+        q = self._to_tensor(quat).reshape(4)
+        if not torch.is_floating_point(q):
+            q = q.to(torch.float64)
+        if normalize:
+            q = q / torch.linalg.norm(q)
+        self._quat = q
+        if trans is None:
+            self._trans = torch.zeros(3, dtype=q.dtype, device=q.device)
+        else:
+            self._trans = self._to_tensor(trans).reshape(3).to(dtype=q.dtype, device=q.device)
+
+    # ----- construction -------------------------------------------------- #
+
+    @classmethod
+    def from_quat(
+        cls,
+        quat: torch.Tensor,
+        trans: Optional[torch.Tensor] = None,
+        *,
+        scalar_last: bool = True,
+        normalize: bool = True,
+    ) -> "TorchSE3Pose":
+        q = cls._to_tensor(quat).reshape(4)
+        if not scalar_last:  # wxyz -> xyzw
+            q = q[[1, 2, 3, 0]]
+        return cls(q, trans, normalize=normalize)
+
+    @classmethod
+    def from_rot_vec(cls, rot_vec: torch.Tensor, trans: Optional[torch.Tensor] = None) -> "TorchSE3Pose":
+        return cls(cls._rotvec_to_quat(cls._to_tensor(rot_vec).reshape(3)), trans, normalize=False)
+
+    @classmethod
+    def from_rot_mat(cls, rot_mat: torch.Tensor, trans: Optional[torch.Tensor] = None) -> "TorchSE3Pose":
+        return cls(_mat_to_quat(cls._to_tensor(rot_mat).reshape(3, 3)), trans, normalize=False)
+
+    @classmethod
+    def from_tf_mat(cls, tf_mat: torch.Tensor) -> "TorchSE3Pose":
+        tf = cls._to_tensor(tf_mat)
+        if tuple(tf.shape) not in ((4, 4), (3, 4)):
+            raise ValueError(f"tf_mat must be (4, 4) or (3, 4), got {tuple(tf.shape)}")
+        return cls.from_rot_mat(tf[:3, :3], tf[:3, 3])
+
+    @classmethod
+    def from_euler(
+        cls,
+        angles: torch.Tensor,
+        seq: str,
+        trans: Optional[torch.Tensor] = None,
+        *,
+        degrees: bool = False,
+    ) -> "TorchSE3Pose":
+        ang = cls._to_tensor(angles).reshape(-1)
+        if degrees:
+            ang = ang * (np.pi / 180.0)
+        if ang.shape[0] != len(seq):
+            raise ValueError(f"expected {len(seq)} angle(s) for seq '{seq}', got {ang.shape[0]}")
+        unit = {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+        quats = [
+            cls._rotvec_to_quat(torch.tensor(unit[axis], dtype=ang.dtype, device=ang.device) * angle)
+            for axis, angle in zip(seq.lower(), ang)
+        ]
+        if not seq.isupper():  # intrinsic (lowercase): moving axes -> reverse string order
+            quats = quats[::-1]
+        q = quats[0]
+        for nxt in quats[1:]:
+            q = cls._quat_mul(q, nxt)
+        return cls(q, trans, normalize=True)
+
+    @classmethod
+    def identity(
+        cls,
+        *,
+        like: Any = None,
+        backend: Optional[str] = None,
+        device: "Optional[Union[str, torch.device]]" = None,
+        dtype: "Optional[Union[np.dtype, torch.dtype]]" = None,
+    ) -> "TorchSE3Pose":
+        if dtype is None:
+            dtype = like.dtype if isinstance(like, torch.Tensor) else torch.float64
+        if device is None and isinstance(like, torch.Tensor):
+            device = like.device
+        q = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=dtype, device=device)
+        return cls(q, torch.zeros(3, dtype=dtype, device=device), normalize=False)
+
+    @classmethod
+    def exp(cls, tangent: torch.Tensor) -> "TorchSE3Pose":
+        xi = cls._to_tensor(tangent).reshape(6)
+        rho, phi = xi[:3], xi[3:]
+        return cls(cls._rotvec_to_quat(phi), cls._left_jacobian_so3(phi) @ rho, normalize=False)
+
+    # ----- accessors ----------------------------------------------------- #
+
+    @property
+    def quaternion(self) -> torch.Tensor:
+        return self._quat.clone()
+
+    @property
+    def translation(self) -> torch.Tensor:
+        return self._trans.clone()
+
+    @property
+    def rotation_matrix(self) -> torch.Tensor:
+        return _quat_to_mat(self._quat)
+
+    @property
+    def transform_matrix(self) -> torch.Tensor:
+        R = _quat_to_mat(self._quat)
+        top = torch.cat([R, self._trans.reshape(3, 1)], dim=1)
+        bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=R.dtype, device=R.device)
+        return torch.cat([top, bottom], dim=0)
+
+    # ----- core group ops ------------------------------------------------ #
+
+    def inverse(self) -> "TorchSE3Pose":
+        x, y, z, w = self._quat.unbind(-1)
+        q_inv = torch.stack([-x, -y, -z, w])
+        t_inv = -(_quat_to_mat(q_inv) @ self._trans)
+        return type(self)(q_inv, t_inv, normalize=False)
+
+    def compose(self, other: "BaseSE3Pose") -> "TorchSE3Pose":
+        oq = self._to_tensor(other.quaternion).to(dtype=self._quat.dtype, device=self._quat.device)
+        ot = self._to_tensor(other.translation).to(dtype=self._trans.dtype, device=self._trans.device)
+        q = self._quat_mul(self._quat, oq)
+        t = _quat_to_mat(self._quat) @ ot + self._trans
+        return type(self)(q, t, normalize=False)
+
+    def apply(self, points: torch.Tensor) -> torch.Tensor:
+        pts = self._to_tensor(points).to(dtype=self._quat.dtype, device=self._quat.device)
+        return pts @ _quat_to_mat(self._quat).transpose(-1, -2) + self._trans
+
+    # ----- Lie-group (backend math) -------------------------------------- #
+
+    def log(self) -> torch.Tensor:
+        phi = self._quat_to_rotvec(self._quat)
+        rho = self._left_jacobian_so3_inv(phi) @ self._trans
+        return torch.cat([rho, phi])
+
+    def adjoint(self) -> torch.Tensor:
+        R = _quat_to_mat(self._quat)
+        tx = self._skew(self._trans)
+        zero = torch.zeros((3, 3), dtype=R.dtype, device=R.device)
+        top = torch.cat([R, tx @ R], dim=1)
+        bottom = torch.cat([zero, R], dim=1)
+        return torch.cat([top, bottom], dim=0)
+
+    # ----- repr ---------------------------------------------------------- #
+
+    def __repr__(self) -> str:
+        q = self._quat.detach().cpu().numpy().round(4).tolist()
+        t = self._trans.detach().cpu().numpy().round(4).tolist()
+        return f"TorchSE3Pose(quat={q}, trans={t}, dtype={self._quat.dtype}, device={self._quat.device})"
+
+    # ----- private torch helpers ----------------------------------------- #
+
+    @staticmethod
+    def _to_tensor(x) -> torch.Tensor:
+        """Tensors pass through (dtype/device/grad preserved); array-like -> float64."""
+        if isinstance(x, torch.Tensor):
+            return x
+        return torch.as_tensor(np.asarray(x, dtype=np.float64))
+
+    @staticmethod
+    def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        """Hamilton product of scalar-last quaternions (xyzw)."""
+        x1, y1, z1, w1 = q1.unbind(-1)
+        x2, y2, z2, w2 = q2.unbind(-1)
+        return torch.stack(
+            [
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            ],
+            dim=-1,
+        )
+
+    @classmethod
+    def _rotvec_to_quat(cls, rot_vec: torch.Tensor) -> torch.Tensor:
+        """``so(3)`` axis-angle -> scalar-last unit quaternion."""
+        theta = torch.linalg.norm(rot_vec)
+        if theta < cls._EPS:  # half-angle Taylor: sin(θ/2)/θ -> 1/2, cos -> 1
+            xyz = rot_vec * 0.5
+            w = torch.ones((), dtype=rot_vec.dtype, device=rot_vec.device)
+        else:
+            half = 0.5 * theta
+            xyz = rot_vec / theta * torch.sin(half)
+            w = torch.cos(half)
+        return torch.cat([xyz, w.reshape(1)])
+
+    @classmethod
+    def _quat_to_rotvec(cls, quat: torch.Tensor) -> torch.Tensor:
+        """Scalar-last unit quaternion -> ``so(3)`` axis-angle (angle in [0, π])."""
+        if quat[3] < 0:  # standardize to the w >= 0 hemisphere (shortest rotation)
+            quat = -quat
+        xyz, w = quat[:3], quat[3]
+        nrm = torch.linalg.norm(xyz)
+        if nrm < cls._EPS:  # small angle: rot_vec ≈ 2 * xyz
+            return xyz * 2.0
+        return xyz / nrm * (2.0 * torch.atan2(nrm, w))
+
+    @staticmethod
+    def _skew(v: torch.Tensor) -> torch.Tensor:
+        """``(3,)`` -> ``(3, 3)`` skew-symmetric ``[v]_×`` (grad-preserving)."""
+        x, y, z = v.unbind(-1)
+        o = torch.zeros((), dtype=v.dtype, device=v.device)
+        return torch.stack(
+            [torch.stack([o, -z, y]), torch.stack([z, o, -x]), torch.stack([-y, x, o])]
+        )
+
+    @classmethod
+    def _left_jacobian_so3(cls, phi: torch.Tensor) -> torch.Tensor:
+        """SO(3) left Jacobian ``V(φ)`` (the SE(3) exp's ``t = V ρ`` coupling)."""
+        theta = torch.linalg.norm(phi)
+        K = cls._skew(phi)
+        eye = torch.eye(3, dtype=phi.dtype, device=phi.device)
+        if theta < cls._EPS:  # Taylor: I + 1/2 K + 1/6 K^2
+            return eye + 0.5 * K + (K @ K) / 6.0
+        a = (1.0 - torch.cos(theta)) / theta**2
+        b = (theta - torch.sin(theta)) / theta**3
+        return eye + a * K + b * (K @ K)
+
+    @classmethod
+    def _left_jacobian_so3_inv(cls, phi: torch.Tensor) -> torch.Tensor:
+        """Inverse SO(3) left Jacobian ``V(φ)⁻¹`` (the SE(3) log coupling)."""
+        theta = torch.linalg.norm(phi)
+        K = cls._skew(phi)
+        eye = torch.eye(3, dtype=phi.dtype, device=phi.device)
+        if theta < cls._EPS:  # Taylor: I - 1/2 K + 1/12 K^2
+            return eye - 0.5 * K + (K @ K) / 12.0
+        c = 1.0 / theta**2 - (1.0 + torch.cos(theta)) / (2.0 * theta * torch.sin(theta))
+        return eye - 0.5 * K + c * (K @ K)
