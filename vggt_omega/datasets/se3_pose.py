@@ -1,0 +1,348 @@
+"""Backend-agnostic SE(3) rigid-transform value type for VGGT-Omega.
+
+:class:`BaseSE3Pose` is an **immutable value object for a single** rigid
+transform in SE(3). It accepts every pose form the vendors emit (quaternion,
+axis-angle, rotation matrix, 3x4/4x4 transform, Euler angles) and stores one
+canonical representation, then exposes the full SE(3) / Lie-group operation
+surface (``inverse``, ``compose`` / ``*`` / ``@``, ``apply``, ``exp`` / ``log``,
+``adjoint``, ``interpolate``).
+
+It models **one** pose — there is no batch dimension and there are no reduce
+operations. A single pose still transforms an arbitrarily-shaped point cloud
+through :meth:`apply`.
+
+Design
+------
+* **Unified representation = unit quaternion (scalar-last ``xyzw``) + translation**
+  (logically ``(7,)``). A pose value type lives and dies by ``normalize`` /
+  ``interpolate`` / ``exp`` / ``log``; those are cheap and numerically stable on
+  a unit quaternion but awkward on a 3x3 ``R`` (which drifts off SO(3)). It is
+  also 7 floats vs 12. The canonical ``(3, 4)`` w2c matrix the rest of the repo
+  stores (``SequenceManifest.extrinsics``) is the top three rows of
+  :attr:`transform_matrix` — a boundary conversion, not storage.
+
+* **Backend-agnostic by inference, not by subclass.** Inputs may be NumPy *or*
+  torch arrays; the backend is read off the input (mirroring
+  ``geometry.closed_form_inverse_se3``) and preserved through every op — so the
+  same class serves both the NumPy manifest/vendor layer and the differentiable
+  torch training/model layer. The ABC therefore types array data as ``Any`` (the
+  concrete backend decides). Array-free constructors (:meth:`identity`) take an
+  explicit ``like=`` / ``backend=`` because there is nothing to infer from.
+
+Conventions (locked)
+--------------------
+* Quaternion order is **scalar-last** ``[x, y, z, w]`` — matches
+  ``utils.rotation`` and ``vendors.common.quat_to_rotation``.
+* Active transform: a pose maps points as ``x' = R @ x + t``.
+* ``a * b == a @ b == a.compose(b)`` — right-to-left, i.e. apply ``b`` first.
+* ``~a == a.inverse()``; ``a(points) == a.apply(points)``.
+* ``a - b == a.boxminus(b)`` — the ``⊟`` tangent ``log(b⁻¹ ∘ a)``.
+* ``a.relative(b) == a ∘ b⁻¹`` — *a re-expressed in b's frame*, the same
+  convention as ``geometry.compose_with_inverse`` (so ``a.relative(b) @ b == a``).
+* Tangent / twist vectors are ``ξ = (ρ, φ)``, shape ``(6,)``, with the
+  **translation part first** (``ρ`` = upper 3) and the ``so(3)`` part second
+  (``φ`` = lower 3).
+* The quaternion double cover (``q ≡ -q``) denotes the same rotation.
+
+Implementation layering
+-----------------------
+The class is split like :class:`~vggt_omega.datasets.base_sequence.BaseSequence`:
+a small **abstract backend kernel** (decorated ``@abstractmethod``) that a NumPy
+or torch subclass must provide, plus a **derived surface** (plain methods,
+bodies elided to ``...``) the base expresses in terms of that kernel. This file
+is **API only** — every body is ``...``; no implementation.
+
+Euler support uses ``scipy``-style sequence strings (``seq="xyz"`` intrinsic /
+``"XYZ"`` extrinsic, ``degrees=`` flag), since ``scipy`` is already a dependency.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any, Optional, Union
+
+import torch
+import numpy as np
+
+# ----------------------------------------------------------------------------- #
+# BaseSE3Pose — the abstract, backend-agnostic SE(3) value type
+# ----------------------------------------------------------------------------- #
+
+
+class BaseSE3Pose(ABC):
+    """An immutable single SE(3) rigid transform.
+
+    The canonical state is a unit quaternion (scalar-last ``xyzw``) plus a
+    translation; there is no batch dimension. Every operation returns a **new**
+    pose (or a plain array); nothing mutates in place. The numerical backend
+    (NumPy or torch) is inferred from construction inputs and carried through
+    unchanged — including autograd when the backend is torch.
+
+    Subclasses implement only the methods marked ``@abstractmethod`` (the backend
+    kernel); the remaining methods are provided by the base in terms of those.
+    """
+
+    # ===================================================================== #
+    # Construction (canonical) — backend inferred from the input arrays
+    # ===================================================================== #
+
+    def __init__(
+        self,
+        quat: Any,
+        trans: Optional[Any] = None,
+        *,
+        normalize: bool = True,
+    ) -> None:
+        """Build a pose from its canonical ``(quat, trans)`` state.
+
+        Args:
+            quat: ``(4,)`` scalar-last ``xyzw``. Need not be unit if ``normalize``
+                is set.
+            trans: ``(3,)``; defaults to zeros.
+            normalize: re-normalise the quaternion to unit length on construction.
+        """
+        super().__init__()
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_quat(
+        cls,
+        quat: Any,
+        trans: Optional[Any] = None,
+        *,
+        scalar_last: bool = True,
+        normalize: bool = True,
+    ) -> "BaseSE3Pose":
+        """Construct from a quaternion (+ optional translation).
+
+        Args:
+            quat: ``(4,)``. Ordered ``xyzw`` if ``scalar_last`` else ``wxyz``.
+            trans: ``(3,)`` or None (zeros).
+            scalar_last: input quaternion order; output is always stored
+                scalar-last.
+            normalize: project to unit length.
+        """
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_rot_vec(
+        cls,
+        rot_vec: Any,
+        trans: Optional[Any] = None,
+    ) -> "BaseSE3Pose":
+        """Construct from an ``so(3)`` axis-angle (rotation) vector.
+
+        Args:
+            rot_vec: ``(3,)`` axis-angle — direction is the axis, magnitude the
+                angle in radians (``R = exp_{so3}(rot_vec)``).
+            trans: ``(3,)`` or None (zeros).
+        """
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_rot_mat(
+        cls,
+        rot_mat: Any,
+        trans: Optional[Any] = None,
+    ) -> "BaseSE3Pose":
+        """Construct from a ``(3, 3)`` rotation matrix (+ optional translation).
+
+        ``rot_mat`` is assumed a proper rotation; pass through :meth:`normalize`
+        first if it may have drifted off SO(3).
+        """
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_tf_mat(cls, tf_mat: Any) -> "BaseSE3Pose":
+        """Construct from a homogeneous transform.
+
+        Args:
+            tf_mat: ``(4, 4)`` or ``(3, 4)`` ``[R | t]``. The bottom row of a 4x4
+                is ignored. This is the inverse of :attr:`transform_matrix` and the
+                bridge to ``SequenceManifest.extrinsics`` (w2c, per-frame ``(3, 4)``).
+        """
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_euler(
+        cls,
+        angles: Any,
+        seq: str,
+        trans: Optional[Any] = None,
+        *,
+        degrees: bool = False,
+    ) -> "BaseSE3Pose":
+        """Construct from Euler angles (``scipy``-style convention).
+
+        Args:
+            angles: ``(k,)`` with ``k == len(seq)`` (1-3 angles).
+            seq: axis sequence, e.g. ``"xyz"`` (intrinsic, lowercase) or ``"XYZ"``
+                (extrinsic, uppercase) — see ``scipy.spatial.transform.Rotation``.
+            trans: ``(3,)`` or None (zeros).
+            degrees: interpret ``angles`` as degrees instead of radians.
+        """
+        ...
+
+    @classmethod
+    @abstractmethod
+    def identity(
+        cls,
+        *,
+        like: Any = None,
+        backend: Optional[str] = None,
+        device: "Optional[Union[str, torch.device]]" = None,
+        dtype: "Optional[Union[np.dtype, torch.dtype]]" = None,
+    ) -> "BaseSE3Pose":
+        """The identity pose.
+
+        Being array-free, this needs an explicit backend: pass ``like=`` (an array
+        or pose to inherit backend/device/dtype from) or ``backend=`` (``"numpy"``
+        or ``"torch"``, + optional ``device`` / ``dtype``). Exactly one of
+        ``like`` / ``backend`` is required.
+        """
+        ...
+
+    # ===================================================================== #
+    # Accessors — canonical state & derived matrices
+    # ===================================================================== #
+
+    @property
+    @abstractmethod
+    def quaternion(self) -> Any:
+        """``(4,)`` unit quaternion, scalar-last ``xyzw``."""
+        ...
+
+    @property
+    @abstractmethod
+    def translation(self) -> Any:
+        """``(3,)`` translation vector."""
+        ...
+
+    @property
+    def rotation_matrix(self) -> Any:
+        """``(3, 3)`` rotation matrix (from the canonical quaternion)."""
+        ...
+
+    @property
+    def transform_matrix(self) -> Any:
+        """``(4, 4)`` homogeneous transform ``[[R, t], [0, 1]]``. The repo's w2c
+        extrinsics are its top three rows ``(3, 4)``."""
+        ...
+
+    # ===================================================================== #
+    # Core SE(3) group operations
+    # ===================================================================== #
+
+    @abstractmethod
+    def inverse(self) -> "BaseSE3Pose":
+        """The inverse transform ``self⁻¹`` (rotation transposed, translation
+        ``-Rᵀt``)."""
+        ...
+
+    @abstractmethod
+    def compose(self, other: "BaseSE3Pose") -> "BaseSE3Pose":
+        """Group product ``self ∘ other`` (apply ``other`` first, then ``self``).
+        Also available as ``self * other`` / ``self @ other``."""
+        ...
+
+    @abstractmethod
+    def apply(self, points: Any) -> Any:
+        """Transform points: ``x' = R @ x + t``.
+
+        Args:
+            points: ``(..., 3)`` — one or many points; the single pose is applied
+                to each.
+
+        Returns:
+            Transformed points, same shape as ``points``. Also ``self(points)``.
+        """
+        ...
+
+    def relative(self, other: "BaseSE3Pose") -> "BaseSE3Pose":
+        """``self ∘ other⁻¹`` — ``self`` re-expressed in ``other``'s frame.
+
+        Matches ``geometry.compose_with_inverse``; satisfies
+        ``self.relative(other) @ other == self``. With w2c camera poses and
+        ``other`` the reference camera, this gives camera-from-reference."""
+        ...
+
+    def normalize(self) -> "BaseSE3Pose":
+        """Return a copy with the quaternion re-projected to unit length (use after
+        accumulating products or building from a drifted rotation matrix)."""
+        ...
+
+    # ===================================================================== #
+    # Lie-group surface — anything touching the tangent space se(3)
+    # ===================================================================== #
+
+    @classmethod
+    @abstractmethod
+    def exp(cls, tangent: Any) -> "BaseSE3Pose":
+        """The SE(3) exponential map: ``se(3)`` twist -> pose.
+
+        Args:
+            tangent: ``(6,)`` twist ``ξ = (ρ, φ)`` — translation part ``ρ`` first
+                (upper 3), ``so(3)`` part ``φ`` second (lower 3). Backend is
+                inferred from ``tangent``. Inverse of :meth:`log`.
+        """
+        ...
+
+    @abstractmethod
+    def log(self) -> Any:
+        """SE(3) logarithm: ``(6,)`` twist ``ξ = (ρ, φ)`` (translation first).
+        Inverse of :meth:`exp`."""
+        ...
+
+    def adjoint(self) -> Any:
+        """``(6, 6)`` adjoint ``Ad_self`` for the ``(ρ, φ)`` twist ordering
+        (so ``self.compose(exp(ξ)) == exp(Ad_self @ ξ).compose(self)``)."""
+        ...
+
+    def boxplus(self, tangent: Any) -> "BaseSE3Pose":
+        """Right ``⊞``: ``self ∘ exp(tangent)`` with ``tangent`` a ``(6,)`` twist.
+        Inverse of :meth:`boxminus`."""
+        ...
+
+    def boxminus(self, other: "BaseSE3Pose") -> Any:
+        """Right ``⊟``: the ``(6,)`` twist with ``other.boxplus(result) == self``,
+        i.e. ``log(other⁻¹ ∘ self)``."""
+        ...
+
+    def interpolate(self, other: "BaseSE3Pose", t: float) -> "BaseSE3Pose":
+        """Constant-twist geodesic interpolation ``self ∘ exp(t · log(self⁻¹ ∘ other))``.
+
+        ``t == 0`` -> ``self``, ``t == 1`` -> ``other``. Reduces to quaternion
+        slerp on the rotation and lerp on the translation."""
+        ...
+
+    # ===================================================================== #
+    # Operators (sugar over the methods above)
+    # ===================================================================== #
+
+    def __mul__(self, other: "BaseSE3Pose") -> "BaseSE3Pose":
+        """``a * b`` -> :meth:`compose` (``a ∘ b``)."""
+        ...
+
+    def __matmul__(self, other: "BaseSE3Pose") -> "BaseSE3Pose":
+        """``a @ b`` -> :meth:`compose` (identical to ``a * b``)."""
+        ...
+
+    def __invert__(self) -> "BaseSE3Pose":
+        """``~a`` -> :meth:`inverse`."""
+        ...
+
+    def __sub__(self, other: "BaseSE3Pose") -> Any:
+        """``a - b`` -> :meth:`boxminus` (the ``⊟`` tangent ``log(b⁻¹ ∘ a)``)."""
+        ...
+
+    def __call__(self, points: Any) -> Any:
+        """``a(points)`` -> :meth:`apply`."""
+        ...
+
+    @abstractmethod
+    def __repr__(self) -> str: ...
