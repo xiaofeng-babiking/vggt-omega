@@ -21,7 +21,7 @@ Poses are returned as :class:`NumpySE3Pose` value objects.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import List, Optional, Set, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -232,67 +232,7 @@ class TumSequence(BaseSequence):
     ) -> str:
         return self._frames[int(frame_id)][0]
 
-    # -- decode many frames into stacked per-modality arrays ----------------- #
-    def parse(
-        self,
-        sensor_id: Union[int, str],
-        frame_ids: List[Union[int, str]],
-        modalities: Optional[Set[Modality]] = None,
-        image_size: Optional[Tuple[int, int]] = None,
-        image_dtype: str = "uint8",
-        num_workers: int = 0,
-    ) -> Dict[Modality, np.ndarray]:
-        """Decode this sensor's ``frame_ids`` into stacked per-modality arrays.
-
-        Returns only the requested per-frame modalities, each stacked along axis 0
-        in ``frame_ids`` order. Composes the per-frame getters (``get_rgb`` /
-        ``get_depth`` / ``get_pose``) and the base ``scaled_intrinsic`` — no
-        separate decode path. Serial decode (``num_workers`` accepted for API
-        compatibility but unused).
-        """
-        requested = set(modalities) if modalities is not None else set(self._MODALITIES)
-        unknown = requested - self._MODALITIES
-        if unknown:
-            raise ValueError(f"TUM does not provide modalities: {sorted(m.value for m in unknown)}")
-        if image_dtype not in ("uint8", "float32"):
-            raise ValueError(f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}")
-
-        def resize(arr: np.ndarray, interp: int) -> np.ndarray:
-            if image_size is None:
-                return arr
-            im = Image.fromarray(arr)
-            im = im.resize((image_size[1], image_size[0]), interp)
-            return np.asarray(im)
-
-        cols: Dict[Modality, list] = {m: [] for m in requested}
-        for f in frame_ids:
-            if Modality.RGB in requested:
-                rgb = resize(self.get_rgb(sensor_id, f), Image.BILINEAR)
-                if image_dtype == "float32":
-                    rgb = rgb.astype(np.float32) / 255.0
-                cols[Modality.RGB].append(rgb)
-            if Modality.DEPTH in requested:
-                cols[Modality.DEPTH].append(resize(self.get_depth(sensor_id, f), Image.NEAREST))
-            if Modality.INTRINSIC in requested:
-                cols[Modality.INTRINSIC].append(self.scaled_intrinsic(sensor_id, f, image_size))
-            if Modality.EXTRINSIC in requested:
-                # w2c OpenCV (3,4) = inverse of the c2w pose, top three rows.
-                w2c = self.get_pose(sensor_id, f).inverse().transform_matrix[:3]
-                cols[Modality.EXTRINSIC].append(w2c.astype(np.float32))
-            if Modality.POSE in requested:
-                cols[Modality.POSE].append(
-                    self.get_pose(sensor_id, f).transform_matrix.astype(np.float32)
-                )
-            if Modality.TIMESTAMP in requested:
-                cols[Modality.TIMESTAMP].append(self.get_timestamp(sensor_id, f))
-
-        out: Dict[Modality, np.ndarray] = {}
-        for m, vals in cols.items():
-            if m is Modality.TIMESTAMP:
-                out[m] = np.asarray(vals, dtype=np.float64)
-            else:
-                out[m] = np.stack(vals, axis=0)
-        return out
+    # parse() is inherited from BaseSequence (concrete template over the getters).
 
     def __repr__(self) -> str:
         return f"TumSequence(seq_id={self.seq_id!r}, frames={len(self._frames)})"

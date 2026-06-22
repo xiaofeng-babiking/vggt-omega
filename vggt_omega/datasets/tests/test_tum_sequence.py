@@ -104,9 +104,9 @@ def test_scaled_intrinsic_native_and_resized(synthetic_tum):
     s = TumSequence(root, seq_id)
     K = s.get_intrinsic(0)
     # image_size=None -> native intrinsic unchanged.
-    np.testing.assert_allclose(s.scaled_intrinsic(0, 0), K, atol=1e-5)
+    np.testing.assert_allclose(s.scaled_intrinsic(0), K, atol=1e-5)
     # resized to half (native is 12x16) -> fx, fy, cx, cy all halved.
-    Ks = s.scaled_intrinsic(0, 0, image_size=(6, 8))
+    Ks = s.scaled_intrinsic(0, image_size=(6, 8))
     np.testing.assert_allclose(Ks[0, 0], K[0, 0] * 0.5, atol=1e-3)
     np.testing.assert_allclose(Ks[1, 1], K[1, 1] * 0.5, atol=1e-3)
     np.testing.assert_allclose(Ks[0, 2], K[0, 2] * 0.5, atol=1e-3)
@@ -154,28 +154,32 @@ def test_parse_stacks_per_modality(synthetic_tum):
     out = s.parse(
         0,
         [0, 2, 3],
-        modalities={Modality.RGB, Modality.DEPTH, Modality.INTRINSIC,
-                    Modality.EXTRINSIC, Modality.POSE, Modality.TIMESTAMP},
+        modalities={Modality.RGB, Modality.DEPTH, Modality.POSE, Modality.TIMESTAMP},
     )
     assert out[Modality.RGB].shape == (3, 12, 16, 3)
     assert out[Modality.DEPTH].shape == (3, 12, 16)
-    assert out[Modality.INTRINSIC].shape == (3, 3, 3)
-    assert out[Modality.EXTRINSIC].shape == (3, 3, 4)
     assert out[Modality.POSE].shape == (3, 4, 4)
     assert out[Modality.TIMESTAMP].shape == (3,)
     assert out[Modality.TIMESTAMP].dtype == np.float64
 
 
-def test_parse_resizes_and_rescales_intrinsic(synthetic_tum):
+def test_parse_rejects_per_sequence_calibration(synthetic_tum):
+    # INTRINSIC / EXTRINSIC are per-sequence calibration, not per-frame -> rejected.
     root, seq_id, _ = synthetic_tum
     s = TumSequence(root, seq_id)
-    out = s.parse(0, [0, 1], modalities={Modality.RGB, Modality.DEPTH, Modality.INTRINSIC},
+    with pytest.raises(ValueError):
+        s.parse(0, [0], modalities={Modality.INTRINSIC})
+    with pytest.raises(ValueError):
+        s.parse(0, [0], modalities={Modality.EXTRINSIC})
+
+
+def test_parse_resizes(synthetic_tum):
+    root, seq_id, _ = synthetic_tum
+    s = TumSequence(root, seq_id)
+    out = s.parse(0, [0, 1], modalities={Modality.RGB, Modality.DEPTH},
                   image_size=(6, 8))  # half of (12, 16)
     assert out[Modality.RGB].shape == (2, 6, 8, 3)
     assert out[Modality.DEPTH].shape == (2, 6, 8)
-    K = s.get_intrinsic(0)
-    np.testing.assert_allclose(out[Modality.INTRINSIC][0, 0, 0], K[0, 0] * 0.5, atol=1e-3)
-    np.testing.assert_allclose(out[Modality.INTRINSIC][0, 1, 1], K[1, 1] * 0.5, atol=1e-3)
 
 
 def test_parse_float32_image_dtype(synthetic_tum):
@@ -186,11 +190,12 @@ def test_parse_float32_image_dtype(synthetic_tum):
     assert out[Modality.RGB].max() <= 1.0
 
 
-def test_parse_extrinsic_is_w2c_inverse_of_pose(synthetic_tum):
+def test_extrinsic_is_inverse_of_pose(synthetic_tum):
+    # get_extrinsic is the static inter-sensor transform (identity for TUM); the
+    # w2c view of a frame is get_pose(...).inverse().
     root, seq_id, _ = synthetic_tum
     s = TumSequence(root, seq_id)
-    out = s.parse(0, [3], modalities={Modality.EXTRINSIC})
-    w2c = out[Modality.EXTRINSIC][0]  # (3,4)
+    w2c = s.get_pose(0, 3).inverse().transform_matrix[:3]
     c2w = s.get_pose(0, 3).transform_matrix
     T = np.eye(4)
     T[:3] = w2c
@@ -261,4 +266,4 @@ def test_real_sequence_smoke():
     assert depth[depth > 0].min() > 0  # metric depth populated
     out = s.parse(0, [0, 10, 20], image_size=(120, 160))
     assert out[Modality.RGB].shape == (3, 120, 160, 3)
-    assert out[Modality.EXTRINSIC].shape == (3, 3, 4)
+    assert out[Modality.POSE].shape == (3, 4, 4)

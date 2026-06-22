@@ -40,6 +40,23 @@ class BaseSequence(ABC):
     pixel getters decode lazily on access.
     """
 
+    # Modalities ``parse`` stacks per frame. INTRINSIC / EXTRINSIC are NOT here:
+    # they are per-sequence *calibration* (a sensor's camera matrix; the static
+    # inter-sensor transform), fetched via get_intrinsic(sensor_id) /
+    # get_extrinsic(src, dst) — not per-frame. POSE (the moving trajectory) is the
+    # only geometry that varies per frame. POINTCLOUD / TRACK are per-sequence.
+    _PER_FRAME_MODALITIES = frozenset(
+        {
+            Modality.RGB,
+            Modality.RGB_SEMANTIC_MASK,
+            Modality.RGB_DYNAMIC_MASK,
+            Modality.DEPTH,
+            Modality.DEPTH_CONFIDENCE,
+            Modality.POSE,
+            Modality.TIMESTAMP,
+        }
+    )
+
     # -- lifecycle ----------------------------------------------------------- #
     @abstractmethod
     def __init__(self, data_root: str, seq_id: str):
@@ -148,19 +165,20 @@ class BaseSequence(ABC):
     def scaled_intrinsic(
         self,
         sensor_id: Union[int, str],
-        frame_id: Union[int, str],
         image_size: Optional[Tuple[int, int]] = None,
     ) -> np.ndarray:
-        """``(3, 3)`` intrinsic rescaled to ``image_size`` ``(H, W)``.
+        """``(3, 3)`` per-sequence intrinsic rescaled to ``image_size`` ``(H, W)``.
 
-        Concrete in the base: pulls the sensor's ``get_intrinsic`` and, when
-        ``image_size`` is given, rescales ``fx, cx`` by ``W/W0`` and ``fy, cy`` by
-        ``H/H0``, where the native ``(H0, W0)`` is read lazily from the frame's
-        image header. ``image_size=None`` returns the native intrinsic unchanged."""
+        Concrete in the base: pulls the sensor's calibrated ``get_intrinsic`` and,
+        when ``image_size`` is given, rescales ``fx, cx`` by ``W/W0`` and
+        ``fy, cy`` by ``H/H0``, where the native ``(H0, W0)`` is read lazily from
+        the sensor's first frame image header. ``image_size=None`` returns the
+        native intrinsic unchanged. (Intrinsics are per-sequence calibration, so
+        this keys off ``sensor_id`` only — not a frame.)"""
         K = np.asarray(self.get_intrinsic(sensor_id), dtype=np.float32).copy()
         if image_size is None:
             return K
-        h0, w0 = self.read_image_size(self._frame_image_path(sensor_id, frame_id))
+        h0, w0 = self.read_image_size(self._frame_image_path(sensor_id, 0))
         sy = image_size[0] / float(h0)
         sx = image_size[1] / float(w0)
         K[0, 0] *= sx  # fx
@@ -178,7 +196,6 @@ class BaseSequence(ABC):
     def get_pointcloud(self) -> np.ndarray:
         """Get sparse/dense pointcloud."""
 
-    @abstractmethod
     def parse(
         self,
         sensor_id: Union[int, str],
@@ -190,11 +207,18 @@ class BaseSequence(ABC):
     ) -> dict[Modality, np.ndarray]:
         """Decode ONE sensor's frames into stacked, per-modality numpy arrays.
 
-        High-performance, single-sensor primitive. Returns neutral data only —
-        it knows nothing about ``SequenceSample``. Multi-sensor assembly, the
-        (sensor, modality) grid, ``concat`` and tensorize / GPU transfer all live
-        downstream (``BaseDataset``): ``BaseSequence`` is orthogonal to the sample
-        container, so nothing here imports or references it.
+        Concrete template: composes the per-frame getters (``get_rgb`` /
+        ``get_depth`` / ``get_semantic_mask`` / ``get_dynamic_mask`` /
+        ``get_depth_confidence`` / ``get_pose`` / ``get_timestamp``), resizes to
+        ``image_size``, casts images per ``image_dtype`` and stacks each modality
+        along axis 0 in ``frame_ids`` order. Vendors implement only the getters +
+        :meth:`get_modalities` + :meth:`_frame_image_path`; they need not override
+        ``parse``.
+
+        INTRINSIC / EXTRINSIC are **not** parsed here: they are per-sequence
+        *calibration* (the sensor camera matrix; the static inter-sensor
+        transform), obtained via :meth:`get_intrinsic` / :meth:`scaled_intrinsic` /
+        :meth:`get_extrinsic`. Only POSE (the moving trajectory) varies per frame.
 
         Returns
         -------
@@ -207,8 +231,7 @@ class BaseSequence(ABC):
             RGB_DYNAMIC_MASK   bool [N, H, W]      True = dynamic
             DEPTH              f32  [N, H, W]      metres · 0 = invalid · <0 = sky
             DEPTH_CONFIDENCE   f32  [N, H, W]
-            INTRINSIC          f32  [N, 3, 3]      pinhole K, px (rescaled to image_size)
-            EXTRINSIC          f32  [N, 3, 4]      w2c OpenCV (= get_extrinsic(...).transform_matrix[:3])
+            POSE               f32  [N, 4, 4]      c2w (= get_pose(...).transform_matrix)
             TIMESTAMP          f64  [N]            seconds
 
         Parameters
@@ -220,41 +243,74 @@ class BaseSequence(ABC):
                       modality (``POINTCLOUD`` / ``TRACK``) or one the sensor does
                       not provide raises ``ValueError``.
         image_size  : ``(H, W)`` resize target so frames stack into one array.
-                      ``None`` -> native size (frames must already be uniform).
-                      Images resize bilinear; depth / masks / confidence nearest;
-                      ``INTRINSIC`` rescales to match.
-        num_workers : caller-owned parallelism. ``0`` = serial — safe when nested
-                      inside a torch DataLoader worker (no oversubscription). ``>0``
-                      = thread pool, for a single standalone-inference parse that
-                      must use the cores itself (the 141s -> 13s regime).
-        image_dtype : ``"uint8"`` (transfer-light; normalize on GPU) or
-                      ``"float32"`` ([0,1], normalized in-loader).
-
-        Notes
-        -----
-        Deterministic decode + resize only — NO augmentation (stochastic aug is a
-        separate composable transform, so ``parse`` stays reproducible / on-disk
-        cacheable). No geometry derivation: ``Modality`` carries no world/cam-point
-        members; unprojection from depth+pose+K happens in the loss, downstream.
+                      ``None`` -> native size. Images resize bilinear; depth /
+                      masks / confidence nearest; ``INTRINSIC`` rescales to match.
+        num_workers : accepted for API compatibility; the base template decodes
+                      serially (safe inside a torch DataLoader worker).
+        image_dtype : ``"uint8"`` (transfer-light) or ``"float32"`` ([0,1]).
         """
-        # ── Design (implementation deferred) ──────────────────────────────────
-        # Intended to become a CONCRETE base method (template): vendors implement
-        # only the get_* getters and never override parse. Left @abstractmethod as
-        # a placeholder until implemented. Sketch:
-        #
-        #   1. resolve modalities: (modalities or get_modalities(sensor_id)) ∩
-        #      PER_FRAME; reject per-sequence / unavailable -> ValueError.
-        #   2. per-frame load closure: call the matching get_* getter; resize to
-        #      image_size (+ rescale K from the frame's native size); cast images
-        #      per image_dtype; convert EXTRINSIC pose -> [3,4] via
-        #      .transform_matrix[:3] (the one numpy<-pose boundary conversion).
-        #   3. parallelism — reuse parallel_loader.py, lazy-imported so importing
-        #      this ABC stays decode-free for the metadata/sampler path:
-        #        · num_workers == 0 or N < _MIN_PARALLEL_FRAMES -> serial loop;
-        #        · else warm-up frame_ids[0] serially (primes vendors' lazy
-        #          per-sequence caches) -> ThreadPoolExecutor(num_workers) under
-        #          the refcounted cv2 single-thread guard (kills N×64 thread
-        #          thrash) -> fail-fast; per-call executor (fork-safe).
-        #   4. merge: np.stack each modality's per-frame arrays in frame order
-        #      -> [N, ...]; return dict[Modality, np.ndarray].
+        if image_dtype not in ("uint8", "float32"):
+            raise ValueError(f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}")
+
+        available = self.get_modalities(sensor_id)
+        per_frame = available & self._PER_FRAME_MODALITIES
+        requested = set(modalities) if modalities is not None else set(per_frame)
+
+        non_per_frame = requested - self._PER_FRAME_MODALITIES
+        if non_per_frame:
+            raise ValueError(
+                f"parse handles per-frame modalities only; got "
+                f"{sorted(m.value for m in non_per_frame)}"
+            )
+        unavailable = requested - available
+        if unavailable:
+            raise ValueError(
+                f"sensor {sensor_id!r} does not provide modalities: "
+                f"{sorted(m.value for m in unavailable)}"
+            )
+
+        def _resize(arr: "np.ndarray", interp: int) -> "np.ndarray":
+            if image_size is None:
+                return arr
+            return np.asarray(
+                Image.fromarray(arr).resize((image_size[1], image_size[0]), interp)
+            )
+
+        cols: dict[Modality, list] = {m: [] for m in requested}
+        for f in frame_ids:
+            if Modality.RGB in requested:
+                rgb = _resize(self.get_rgb(sensor_id, f), Image.BILINEAR)
+                if image_dtype == "float32":
+                    rgb = rgb.astype(np.float32) / 255.0
+                cols[Modality.RGB].append(rgb)
+            if Modality.RGB_SEMANTIC_MASK in requested:
+                cols[Modality.RGB_SEMANTIC_MASK].append(
+                    _resize(self.get_semantic_mask(sensor_id, f), Image.NEAREST)
+                )
+            if Modality.RGB_DYNAMIC_MASK in requested:
+                cols[Modality.RGB_DYNAMIC_MASK].append(
+                    _resize(self.get_dynamic_mask(sensor_id, f), Image.NEAREST)
+                )
+            if Modality.DEPTH in requested:
+                cols[Modality.DEPTH].append(
+                    _resize(self.get_depth(sensor_id, f), Image.NEAREST)
+                )
+            if Modality.DEPTH_CONFIDENCE in requested:
+                cols[Modality.DEPTH_CONFIDENCE].append(
+                    _resize(self.get_depth_confidence(sensor_id, f), Image.NEAREST)
+                )
+            if Modality.POSE in requested:
+                cols[Modality.POSE].append(
+                    np.asarray(self.get_pose(sensor_id, f).transform_matrix, dtype=np.float32)
+                )
+            if Modality.TIMESTAMP in requested:
+                cols[Modality.TIMESTAMP].append(self.get_timestamp(sensor_id, f))
+
+        out: dict[Modality, np.ndarray] = {}
+        for m, vals in cols.items():
+            if m is Modality.TIMESTAMP:
+                out[m] = np.asarray(vals, dtype=np.float64)
+            else:
+                out[m] = np.stack(vals, axis=0)
+        return out
         # ──────────────────────────────────────────────────────────────────────
