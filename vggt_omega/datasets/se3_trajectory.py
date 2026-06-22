@@ -239,6 +239,50 @@ class BaseSE3Trajectory(ABC):
         return [self.interpolate(start + (end - start) * k / (n - 1)) for k in range(n)]
 
     # ===================================================================== #
+    # extrapolate — constant-velocity (screw) continuation beyond the ends
+    # ===================================================================== #
+
+    def extrapolate(self, t: float) -> BaseSE3Pose:
+        """Extrapolate the trajectory to a time ``t`` outside ``[0, 1]``.
+
+        The fitted clamped B-spline has **zero velocity at its endpoints** (the
+        triple-padded control poses pin the boundary derivative to zero), so it
+        carries no continuation direction of its own. Extrapolation therefore uses
+        the boundary **inter-pose twist** as a constant body velocity — a screw
+        motion (Chasles) that continues the last/first observed rigid motion:
+
+        * ``t > 1``: ``poses[-1] ∘ exp((t - 1) · ξ_end)`` with
+          ``ξ_end = log(poses[-2]⁻¹ poses[-1])`` scaled to one unit of the
+          *last* time gap;
+        * ``t < 0``: ``poses[0] ∘ exp(t · ξ_start)`` with
+          ``ξ_start = log(poses[0]⁻¹ poses[1])`` scaled to one unit of the *first*
+          time gap.
+
+        ``t`` is on the same normalised scale as :meth:`interpolate`. Inside
+        ``[0, 1]`` it simply delegates to :meth:`interpolate` (so the seam is
+        continuous: ``extrapolate(0) == interpolate(0)``,
+        ``extrapolate(1) == interpolate(1)``). Velocity is **not** continuous across
+        the seam — by construction the interior spline ends at rest while the
+        extrapolation moves; this is intentional and unavoidable for a clamped fit.
+        """
+        if 0.0 <= t <= 1.0:
+            return self.interpolate(t)
+
+        self._ensure_fit()
+        knots_t = self._times  # normalised input-pose times in [0, 1]
+        if t > 1.0:
+            # ξ for the last gap; one unit of (t - 1) advances by one last-gap span.
+            xi = self._poses[-1].boxminus(self._poses[-2])  # log(P_{N-2}⁻¹ P_{N-1})
+            gap = float(knots_t[-1] - knots_t[-2])
+            steps = (t - 1.0) / gap if gap > 0 else 0.0
+            return self._poses[-1].boxplus(steps * xi)
+        # t < 0: continue backwards along the first gap (t is already negative).
+        xi = self._poses[1].boxminus(self._poses[0])  # log(P_0⁻¹ P_1)
+        gap = float(knots_t[1] - knots_t[0])
+        steps = t / gap if gap > 0 else 0.0
+        return self._poses[0].boxplus(steps * xi)
+
+    # ===================================================================== #
     # transform — push the whole trajectory through an SE(3)/SIM(3) map
     # ===================================================================== #
 

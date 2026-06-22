@@ -352,6 +352,77 @@ class SE3TrajectoryContract:
         with pytest.raises(ValueError):
             tr.sample(0.0, 1.0, 0)
 
+    # ----- extrapolate ------------------------------------------------------ #
+
+    @randomized
+    def test_extrapolate_in_range_matches_interpolate(self, seed):
+        # Inside [0, 1] extrapolate must delegate to interpolate exactly.
+        rng = _rng(seed)
+        tr = self.random_traj(rng, n=6).fit()
+        for t in [0.0, 0.2, 0.5, 0.8, 1.0]:
+            assert_pose_close(tr.extrapolate(t), tr.interpolate(t))
+
+    @randomized
+    def test_extrapolate_seam_is_continuous(self, seed):
+        # The curve is C0 across the seam: a tiny step past an endpoint stays close.
+        rng = _rng(seed)
+        tr = self.random_traj(rng, n=5).fit()
+        for t_seam in (0.0, 1.0):
+            a = _to_np(tr.extrapolate(t_seam).translation)
+            b = _to_np(tr.extrapolate(t_seam + 1e-4).translation)
+            c = _to_np(tr.extrapolate(t_seam - 1e-4).translation)
+            assert np.linalg.norm(a - b) < 1e-2
+            assert np.linalg.norm(a - c) < 1e-2
+
+    @randomized
+    def test_extrapolate_end_is_constant_velocity_screw(self, seed):
+        # t = 1 + k * (last normalised gap) must equal poses[-1] ∘ exp(k · ξ_end),
+        # i.e. a constant-twist screw continuing the last inter-pose motion.
+        rng = _rng(seed)
+        poses = [self.random_pose(rng) for _ in range(5)]
+        tr = self.Traj(poses).fit()
+        xi = poses[-1].boxminus(poses[-2])  # ξ_end = log(P_{N-2}⁻¹ P_{N-1})
+        gap = 1.0 / (len(poses) - 1)  # last normalised gap (uniform times)
+        for k in [0.5, 1.0, 2.0, 3.0]:
+            got = tr.extrapolate(1.0 + k * gap)
+            expect = poses[-1].boxplus(k * xi)
+            assert_pose_close(got, expect)
+
+    @randomized
+    def test_extrapolate_start_is_constant_velocity_screw(self, seed):
+        # Symmetric backward continuation off the start using ξ_start = log(P_0⁻¹ P_1).
+        rng = _rng(seed)
+        poses = [self.random_pose(rng) for _ in range(5)]
+        tr = self.Traj(poses).fit()
+        xi = poses[1].boxminus(poses[0])
+        gap = 1.0 / (len(poses) - 1)
+        for k in [0.5, 1.0, 2.0]:
+            got = tr.extrapolate(-k * gap)
+            expect = poses[0].boxplus(-k * xi)
+            assert_pose_close(got, expect)
+
+    @randomized
+    def test_extrapolate_honors_nonuniform_last_gap(self, seed):
+        # With non-uniform times, one normalised *last-gap* step past the end equals
+        # exactly one ξ_end step (the step is scaled by the real last gap, not 1/N).
+        rng = _rng(seed)
+        poses = [self.random_pose(rng) for _ in range(4)]
+        times = [0.0, 1.0, 2.0, 10.0]  # last gap dominates
+        tr = self.Traj(poses, times=times).fit()
+        last_gap = (10.0 - 2.0) / 10.0  # normalised
+        xi = poses[-1].boxminus(poses[-2])
+        assert_pose_close(tr.extrapolate(1.0 + last_gap), poses[-1].boxplus(xi))
+        assert_pose_close(tr.extrapolate(1.0 + 2.0 * last_gap), poses[-1].boxplus(2.0 * xi))
+
+    @randomized
+    def test_extrapolate_constant_trajectory_stays_put(self, seed):
+        # All-equal poses -> zero boundary twist -> extrapolation never moves.
+        rng = _rng(seed)
+        p = self.random_pose(rng)
+        tr = self.Traj([p, p, p, p]).fit()
+        for t in [-1.0, -0.3, 1.5, 3.0]:
+            assert_pose_close(tr.extrapolate(t), p)
+
     # ----- transform -------------------------------------------------------- #
 
     @randomized
@@ -466,6 +537,22 @@ class TestTorchSE3Trajectory(SE3TrajectoryContract):
         rest = [self.random_pose(rng) for _ in range(4)]
         tr = TorchSE3Trajectory([head] + rest)
         tr.interpolate(0.1).translation.sum().backward()
+        assert q.grad is not None and torch.isfinite(q.grad).all()
+        assert t.grad is not None and torch.isfinite(t.grad).all()
+
+    @randomized
+    def test_grad_flows_through_extrapolate(self, seed):
+        # Backward extrapolation (t < 0) uses poses[0] / poses[1]; put the grad head
+        # at poses[0] so autograd has a path.
+        rng = _rng(seed)
+        q = torch.tensor(random_quat(rng), requires_grad=True)
+        t = torch.tensor(random_trans(rng), requires_grad=True)
+        head = TorchSE3Pose.from_quat(q, t)
+        rest = [self.random_pose(rng) for _ in range(4)]
+        tr = TorchSE3Trajectory([head] + rest)
+        out = tr.extrapolate(-0.4)
+        assert isinstance(out.translation, torch.Tensor)
+        out.translation.sum().backward()
         assert q.grad is not None and torch.isfinite(q.grad).all()
         assert t.grad is not None and torch.isfinite(t.grad).all()
 
