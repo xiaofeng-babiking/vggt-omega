@@ -19,6 +19,8 @@ skyseg.onnx.tmp
 
 .vscode
 
+opencode.json
+
 .mcp.json
 
 .agent_view/
