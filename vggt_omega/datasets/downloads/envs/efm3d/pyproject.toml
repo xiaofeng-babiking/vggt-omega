@@ -1,0 +1,11 @@
+[project]
+name = "dl-efm3d"
+version = "0"
+description = "uv env for the EFM3D benchmark download scripts (Project Aria toolkit)."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # EFM3D repo scripts decode Aria VRS and consume the email-gated URL manifest.
+    "projectaria-tools[all]",
+    "requests",
+    "tqdm",
+]

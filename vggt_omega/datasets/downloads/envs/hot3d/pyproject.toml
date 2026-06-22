@@ -1,0 +1,12 @@
+[project]
+name = "dl-hot3d"
+version = "0"
+description = "uv env for downloading the full HOT3D VRS dataset via its data_downloader."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # Toolkit pins for the HOT3D downloader (see facebookresearch/hot3d).
+    "projectaria-tools==1.5.1",
+    "vrs",
+    "requests",
+    "tqdm",
+]

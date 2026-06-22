@@ -1,0 +1,11 @@
+[project]
+name = "dl-dl3dv"
+version = "0"
+description = "uv env for downloading DL3DV-10K (gated HuggingFace) via the repo's scripts/download.py."
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub[cli]",
+    "pandas",
+    "tqdm",
+    "requests",
+]

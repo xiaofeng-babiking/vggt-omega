@@ -1,0 +1,8 @@
+[project]
+name = "dl-megasynth"
+version = "0"
+description = "uv env for downloading MegaSynth (public HuggingFace dataset hwjiang/MegaSynth)."
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub[cli]",
+]
