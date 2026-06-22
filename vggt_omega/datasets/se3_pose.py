@@ -326,8 +326,20 @@ class BaseSE3Pose(ABC):
     def interpolate(self, other: "BaseSE3Pose", t: float) -> "BaseSE3Pose":
         """Constant-twist geodesic interpolation ``self ∘ exp(t · log(self⁻¹ ∘ other))``.
 
-        ``t == 0`` -> ``self``, ``t == 1`` -> ``other``. Reduces to quaternion
-        slerp on the rotation and lerp on the translation."""
+        ``t == 0`` -> ``self``, ``t == 1`` -> ``other``. This is the SE(3) geodesic:
+        a single constant rigid-body twist (a *screw motion* — Chasles' theorem) held
+        over the interval, which is frame-invariant and the trajectory any point
+        rigidly attached to the moving body actually sweeps.
+
+        The **rotation** reduces to quaternion slerp (constant angular velocity from
+        ``self``'s to ``other``'s orientation). The **translation is not** a
+        straight-line lerp of the endpoints: it follows the screw path, i.e. the
+        twist's linear velocity ``ρ`` integrated through the intermediate
+        orientations via the SO(3) left Jacobian ``V`` —
+        ``t(τ) = R_self · V(τ·φ) · (τ·ρ) + t_self``. It coincides with the lerp only
+        at the endpoints (``t ∈ {0, 1}``) or when there is no relative rotation
+        (``φ ≈ 0``, where ``V → I``). Use a separate slerp + lerp if you need the
+        positions to travel on straight lines (e.g. authored camera paths)."""
         twist = self.inverse().compose(other).log()
         return self.compose(type(self).exp(t * twist))
 

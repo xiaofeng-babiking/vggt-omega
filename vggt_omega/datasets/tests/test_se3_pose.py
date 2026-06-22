@@ -16,6 +16,7 @@ only the two backend subclasses are.
 import numpy as np
 import pytest
 import torch
+from scipy.spatial.transform import Rotation as _Rotation, Slerp as _Slerp
 
 from vggt_omega.datasets.se3_pose import NumpySE3Pose, TorchSE3Pose
 
@@ -73,6 +74,56 @@ def assert_pose_close(a, b, atol: float = ATOL) -> None:
         qb = -qb
     np.testing.assert_allclose(qa, qb, atol=atol)
     np.testing.assert_allclose(_to_np(a.translation), _to_np(b.translation), atol=atol)
+
+
+def interpolate_groundtruth(a, b, t: float):
+    """Reference SE(3) geodesic interpolation, independent of the class under test.
+
+    This is the constant-twist *screw motion* ``a ∘ exp(t·log(a⁻¹∘b))`` that
+    :meth:`BaseSE3Pose.interpolate` implements, but reconstructed from first
+    principles with ``scipy`` so it cross-checks the class's own ``exp``/``log``:
+
+    * **rotation** = quaternion slerp (``scipy.Slerp``, shortest arc) — constant
+      angular velocity from ``a`` to ``b``;
+    * **translation** = the screw path, *not* a straight-line lerp. The relative
+      translation is mapped into twist coordinates ``ρ = V(φ)⁻¹ · t_rel`` and
+      re-integrated at fraction ``t`` through ``V(t·φ)`` (the SO(3) left Jacobian,
+      the time-averaged rotation), then carried back into the world frame:
+      ``t(t) = R_a · V(t·φ) · (t·ρ) + t_a``.
+
+    Returns ``(quat_xyzw, trans)`` as float64 NumPy arrays.
+    """
+    qa, qb = _to_np(a.quaternion), _to_np(b.quaternion)
+    ta, tb = _to_np(a.translation), _to_np(b.translation)
+    Ra = _Rotation.from_quat(qa).as_matrix()
+
+    # --- rotation: shortest-arc quaternion slerp ---
+    if np.dot(qa, qb) < 0:  # same hemisphere -> short arc
+        qb = -qb
+    slerp = _Slerp([0.0, 1.0], _Rotation.from_quat(np.stack([qa, qb])))
+    quat = slerp([t])[0].as_quat()  # scalar-last xyzw
+
+    # --- translation: SE(3) screw path via the SO(3) left Jacobian V ---
+    R_rel = Ra.T @ _Rotation.from_quat(qb).as_matrix()
+    phi = _Rotation.from_matrix(R_rel).as_rotvec()          # relative rotation axis-angle
+    t_rel = Ra.T @ (tb - ta)                                # relative translation, in a's frame
+    rho = np.linalg.solve(_left_jacobian_so3(phi), t_rel)   # ρ = V(φ)⁻¹ · t_rel
+    trans = Ra @ (_left_jacobian_so3(t * phi) @ (t * rho)) + ta
+    return quat, trans
+
+
+def _left_jacobian_so3(phi: np.ndarray) -> np.ndarray:
+    """SO(3) left Jacobian ``V(φ)``, computed independently of the class under test."""
+    theta = float(np.linalg.norm(phi))
+    K = np.array([[0.0, -phi[2], phi[1]],
+                  [phi[2], 0.0, -phi[0]],
+                  [-phi[1], phi[0], 0.0]])
+    if theta < 1e-10:  # Taylor: I + 1/2 K + 1/6 K^2
+        return np.eye(3) + 0.5 * K + (K @ K) / 6.0
+    a = (1.0 - np.cos(theta)) / theta**2
+    b = (theta - np.sin(theta)) / theta**3
+    return np.eye(3) + a * K + b * (K @ K)
+
 
 
 # ----------------------------------------------------------------------------- #
@@ -316,6 +367,57 @@ class SE3PoseContract:
         rng = _rng(seed)
         a, b = self.random_pose(rng), self.random_pose(rng)
         assert_pose_close(a.interpolate(b, 0.5), b.interpolate(a, 0.5))
+
+    @randomized
+    def test_interpolate_matches_screw_groundtruth(self, seed):
+        # Cross-check interpolate() against an independent SE(3) geodesic groundtruth:
+        # rotation = quaternion slerp (scipy Slerp); translation = screw path via the
+        # SO(3) left Jacobian (NOT a straight-line lerp — they agree only at t∈{0,1}).
+        rng = _rng(seed)
+        a, b = self.random_pose(rng), self.random_pose(rng)
+        for t in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0, float(rng.uniform(0.0, 1.0))]:
+            got = a.interpolate(b, t)
+            exp_quat, exp_trans = interpolate_groundtruth(a, b, t)
+
+            got_quat = _to_np(got.quaternion)
+            if np.dot(got_quat, exp_quat) < 0:  # quaternion double cover (q ≡ -q)
+                exp_quat = -exp_quat
+            np.testing.assert_allclose(got_quat, exp_quat, atol=ATOL,
+                                       err_msg=f"rotation mismatch at t={t}")
+            np.testing.assert_allclose(_to_np(got.translation), exp_trans, atol=ATOL,
+                                       err_msg=f"translation mismatch at t={t}")
+
+    @randomized
+    def test_interpolate_rotation_is_slerp(self, seed):
+        # Isolate the rotation channel: it is exactly the shortest-arc quaternion
+        # slerp, independent of the translation.
+        rng = _rng(seed)
+        a, b = self.random_pose(rng), self.random_pose(rng)
+        for t in [0.0, 0.3, 0.5, 0.8, 1.0]:
+            exp_quat, _ = interpolate_groundtruth(a, b, t)
+            got_quat = _to_np(a.interpolate(b, t).quaternion)
+            if np.dot(got_quat, exp_quat) < 0:  # quaternion double cover (q ≡ -q)
+                exp_quat = -exp_quat
+            np.testing.assert_allclose(got_quat, exp_quat, atol=ATOL,
+                                       err_msg=f"rotation not slerp at t={t}")
+
+    @randomized
+    def test_interpolate_translation_is_lerp_iff_no_relative_rotation(self, seed):
+        # With no relative rotation the left Jacobian V -> I, so the screw path
+        # collapses to the straight-line lerp; with rotation present it must NOT.
+        rng = _rng(seed)
+        q = random_quat(rng)
+        same_rot_a = self.Pose.from_quat(q, random_trans(rng))
+        same_rot_b = self.Pose.from_quat(q, random_trans(rng))
+        ta, tb = _to_np(same_rot_a.translation), _to_np(same_rot_b.translation)
+        for t in [0.0, 0.3, 0.5, 0.8, 1.0]:
+            np.testing.assert_allclose(
+                _to_np(same_rot_a.interpolate(same_rot_b, t).translation),
+                (1.0 - t) * ta + t * tb,
+                atol=ATOL,
+                err_msg=f"translation not lerp (no relative rotation) at t={t}",
+            )
+
 
     @randomized
     def test_normalize_yields_unit_and_same_pose(self, seed):
