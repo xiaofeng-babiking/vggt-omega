@@ -8,38 +8,40 @@ license = {file = "LICENSE"}
 authors = [
     {name = "Jianyuan Wang", email = "jianyuan@robots.ox.ac.uk"},
 ]
+# All dependencies pinned to the exact versions resolved in uv.lock.
+# Formerly-optional extras (demo, export, train, viz) are folded into the
+# core dependency set so that `uv sync --frozen` installs everything,
+# including torch with CUDA support (CUDA wheels are pulled in automatically
+# on Linux via torch's bundled nvidia-*-cu13 / cuda-toolkit dependencies).
 dependencies = [
-    "numpy<2",
-    "Pillow",
-    "einops",
-    "safetensors",
-    "opencv-python",
-    "colorlog",
-]
-
-[project.optional-dependencies]
-demo = [
-    "gradio>=5.17.1",
-    "viser>=0.2.23",
-    "tqdm",
-    "scipy",
-    "trimesh",
-    "matplotlib",
-    "requests",
-    "onnxruntime",
-]
-export = [
-    "pycolmap>=3.10.0",
-]
-train = [
-    "torch>=2.4",
-    "torchvision>=0.18",
-    "hydra-core>=1.3",
-    "omegaconf>=2.3",
-    "tensorboard",
-]
-viz = [
-    "rerun-sdk>=0.20",
+    # core
+    "numpy==1.26.4",
+    "Pillow==12.2.0",
+    "einops==0.8.2",
+    "safetensors==0.7.0",
+    "opencv-python==4.11.0.86",
+    "colorlog==6.10.1",
+    # train (torch ships CUDA wheels on linux straight from PyPI)
+    "torch==2.12.0",
+    "torchvision==0.27.0",
+    "hydra-core==1.3.2",
+    "omegaconf==2.3.0",
+    # export
+    "pycolmap==4.0.4",
+    # viz
+    "rerun-sdk==0.23.1",
+    # demo
+    "gradio==6.15.2",
+    "viser==1.0.29",
+    "tqdm==4.67.3",
+    "trimesh==4.12.2",
+    "matplotlib==3.10.9",
+    "requests==2.34.2",
+    # scipy / onnxruntime are locked at different versions per Python version
+    "scipy==1.15.3; python_full_version < '3.11'",
+    "scipy==1.17.1; python_full_version >= '3.11'",
+    "onnxruntime==1.24.3; python_full_version < '3.11'",
+    "onnxruntime==1.26.0; python_full_version >= '3.11'",
 ]
 
 [build-system]
