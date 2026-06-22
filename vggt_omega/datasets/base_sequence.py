@@ -57,11 +57,32 @@ class BaseSequence(ABC):
         }
     )
 
+    # -- discovery (which sequence ids live under a data root) --------------- #
+    @classmethod
+    def discover(cls, data_root: str, patterns: "Optional[List[str]]" = None) -> "List[str]":
+        """List the sequence ids under ``data_root`` (relative ids passable as
+        ``seq_id`` to this class).
+
+        Default: each immediate sub-directory of ``data_root`` matching a glob in
+        ``patterns`` (``["*"]`` if None) is one sequence. Vendors whose sequences
+        are nested, require a marker file, or come from an index file override
+        this (the layout knowledge belongs with the BaseSequence subclass, so a
+        single generic ``SequenceDataset`` can stay vendor-agnostic).
+        """
+        import glob
+        import os
+
+        names = set()
+        for pat in (patterns or ["*"]):
+            for d in glob.glob(os.path.join(data_root, pat)):
+                if os.path.isdir(d):
+                    names.add(os.path.relpath(d, data_root))
+        return sorted(names)
+
     # -- lifecycle ----------------------------------------------------------- #
     @abstractmethod
     def __init__(self, data_root: str, seq_id: str):
         """Initialize sequence."""
-
     @abstractmethod
     def load_manifest(self) -> None:
         """Load sequence manifest, e.g. global indices of files."""

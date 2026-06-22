@@ -234,5 +234,18 @@ class TumSequence(BaseSequence):
 
     # parse() is inherited from BaseSequence (concrete template over the getters).
 
+    @classmethod
+    def discover(cls, data_root: str, patterns: Optional[List[str]] = None) -> List[str]:
+        """TUM sequence ids = immediate sub-dirs of ``data_root`` that contain an
+        ``rgb.txt`` index, filtered by the glob ``patterns`` (``["*"]`` if None)."""
+        import glob
+
+        names = set()
+        for pat in (patterns or ["*"]):
+            for d in glob.glob(os.path.join(data_root, pat)):
+                if os.path.isfile(os.path.join(d, "rgb.txt")):
+                    names.add(os.path.basename(d.rstrip("/")))
+        return sorted(names)
+
     def __repr__(self) -> str:
         return f"TumSequence(seq_id={self.seq_id!r}, frames={len(self._frames)})"
