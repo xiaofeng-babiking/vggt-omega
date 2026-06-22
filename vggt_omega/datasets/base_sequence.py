@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Union, List, Optional
+from typing import TYPE_CHECKING, Union, List, Optional, Tuple
+
+import numpy as np
+from PIL import Image
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from .se3_pose import BaseSE3Pose
 
 
@@ -122,6 +123,51 @@ class BaseSequence(ABC):
         sensor_id: Union[int, str],
     ) -> np.ndarray:
         """Get intrinsic, e.g. camera matrix."""
+
+    # -- image-size helpers (manifest-backed; concrete in the base) ---------- #
+    @abstractmethod
+    def _frame_image_path(
+        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+    ) -> str:
+        """Path to the (undecoded) RGB file for a frame.
+
+        The base owns the generic header read / intrinsic rescale; only this
+        manifest-specific lookup is per-vendor, since the manifest schema (where
+        file paths live) is private to each subclass."""
+
+    @staticmethod
+    def read_image_size(path: str) -> Tuple[int, int]:
+        """Read an image's ``(H, W)`` from its header — no pixel decode.
+
+        Generic primitive shared by all vendors; keeps the metadata / sampler path
+        decode-free (PIL reads dimensions without decompressing the image)."""
+        with Image.open(path) as im:
+            w, h = im.size  # PIL reports (W, H)
+        return (h, w)
+
+    def scaled_intrinsic(
+        self,
+        sensor_id: Union[int, str],
+        frame_id: Union[int, str],
+        image_size: Optional[Tuple[int, int]] = None,
+    ) -> np.ndarray:
+        """``(3, 3)`` intrinsic rescaled to ``image_size`` ``(H, W)``.
+
+        Concrete in the base: pulls the sensor's ``get_intrinsic`` and, when
+        ``image_size`` is given, rescales ``fx, cx`` by ``W/W0`` and ``fy, cy`` by
+        ``H/H0``, where the native ``(H0, W0)`` is read lazily from the frame's
+        image header. ``image_size=None`` returns the native intrinsic unchanged."""
+        K = np.asarray(self.get_intrinsic(sensor_id), dtype=np.float32).copy()
+        if image_size is None:
+            return K
+        h0, w0 = self.read_image_size(self._frame_image_path(sensor_id, frame_id))
+        sy = image_size[0] / float(h0)
+        sx = image_size[1] / float(w0)
+        K[0, 0] *= sx  # fx
+        K[0, 2] *= sx  # cx
+        K[1, 1] *= sy  # fy
+        K[1, 2] *= sy  # cy
+        return K
 
     # -- per-sensor / per-sequence products ---------------------------------- #
     @abstractmethod
