@@ -17,8 +17,6 @@ skyseg.onnx.tmp
 *.pth
 *.safetensors
 
-uv.lock
-
 .vscode
 
 .mcp.json
