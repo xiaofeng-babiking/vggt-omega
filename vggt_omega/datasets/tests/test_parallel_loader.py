@@ -12,13 +12,13 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from vggt_omega.datasets.base_dataset import BaseDataset
 from vggt_omega.datasets.parallel_loader import (
     merge_chunk_batches,
     parallel_get_data,
     resolve_num_workers,
     split_ids,
 )
+from torch.utils.data import Dataset
 
 TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
 HAVE_TUM = os.path.isdir(TUM_DIR)
@@ -59,7 +59,7 @@ def _eval_common():
     )
 
 
-class FakeVendor(BaseDataset):
+class FakeVendor(Dataset):
     """Deterministic synthetic vendor following the standard get_data contract.
 
     Every per-frame array is a pure function of the frame id, so chunked
@@ -81,10 +81,13 @@ class FakeVendor(BaseDataset):
     )
 
     def __init__(self, common_conf, num_frames=64, h=32, w=32, fail_on_ids=()):
-        super().__init__(common_conf=common_conf)
+        super().__init__()
         self.training = common_conf.training
         self.inside_random = common_conf.inside_random
         self.get_nearby = common_conf.get_nearby
+        # RNG-bearing flags parallel_get_data inspects to force the serial fallback.
+        self.landscape_check = common_conf.landscape_check
+        self.rescale_aug = common_conf.rescale_aug
         self.num_frames = num_frames
         self.h, self.w = h, w
         self.sequence_list = ["seq0"]
@@ -99,6 +102,15 @@ class FakeVendor(BaseDataset):
 
     def native_image_size(self, local_idx=0):
         return (self.h, self.w)
+
+    def __len__(self):
+        return self.len_train
+
+    def get_target_shape(self, aspect_ratio):
+        short_size = int(64 * aspect_ratio)
+        if short_size % 16 != 0:
+            short_size = (short_size // 16) * 16
+        return np.array([short_size, 64])
 
     def _frame(self, i):
         i = int(i)

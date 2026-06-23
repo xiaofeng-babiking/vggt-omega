@@ -1,23 +1,27 @@
-"""Adapter exposing :class:`BaseSequence` vendors through the training/inference
-:class:`~vggt_omega.datasets.base_dataset.BaseDataset` contract.
+"""The single, unified dataset API for VGGT-Omega training and inference.
 
-The new :mod:`vggt_omega.datasets.vendors` vendors are :class:`BaseSequence`
-objects (lazy getters + :meth:`parse`), one instance per *sequence*. The training
-loader (:class:`ComposedDataset`) and inference, however, drive a
-:class:`BaseDataset` that returns the rich per-batch dict (``images`` / ``depths``
-/ ``extrinsics`` / ``intrinsics`` / ``cam_points`` / ``world_points`` /
-``point_masks`` / ``ids`` ...) via :meth:`get_data`, and enumerate sequences
-through ``sequence_list`` / :meth:`sequence_num_frames` / :meth:`native_image_size`.
+:class:`SequenceDataset` drives any :class:`BaseSequence` vendor (lazy getters +
+:meth:`parse`, one instance per *sequence*) through the per-batch dict contract the
+training loader (:class:`ComposedDataset`) and inference expect: ``images`` /
+``depths`` / ``extrinsics`` / ``intrinsics`` / ``cam_points`` / ``world_points`` /
+``point_masks`` / ``ids`` ... via :meth:`get_data`, with sequence enumeration through
+``sequence_list`` / :meth:`sequence_num_frames` / :meth:`native_image_size`.
 
-:class:`SequenceDataset` bridges the two: it discovers the vendor's sequences,
-constructs a :class:`BaseSequence` per sequence on demand (cached), and implements
-:meth:`get_data` by composing the sequence getters with
-:meth:`BaseDataset.process_one_image` (the one numpy<-pose boundary: a frame's
-camera-to-world pose becomes the w2c OpenCV ``[R|t]`` extrinsic). Frame selection
-for a batch uses the **SE(3) arc-length sampler** over a *random* ``[start, end]``
-window (see :func:`~vggt_omega.datasets.samplers.se3_sampler.sample_se3_trajectory`),
-so batches skip low-motion stretches; the randomness is the window, exactly as the
-sampler intends.
+It is fully generic and config-driven: the concrete :class:`BaseSequence` backend is
+supplied via ``sequence_cls`` (a hydra class reference in YAML), so there is no
+per-vendor dataset class. It discovers the vendor's sequences, constructs a
+:class:`BaseSequence` per sequence on demand (cached), and builds each frame by
+composing the sequence getters with :meth:`process_one_image` (the one numpy<-pose
+boundary: a frame's camera-to-world pose becomes the w2c OpenCV ``[R|t]`` extrinsic).
+Frame selection for a batch uses the **SE(3) arc-length sampler** over a *random*
+``[start, end]`` window (see
+:func:`~vggt_omega.datasets.samplers.se3_sampler.sample_se3_trajectory`), so batches
+skip low-motion stretches; the randomness is the window, exactly as the sampler intends.
+
+This module replaces the old ``base_dataset.py`` abstract base: image resizing,
+augmentation and the depth->world/cam coordinate conversion (formerly
+``BaseDataset.process_one_image`` / ``get_target_shape``) now live directly on
+:class:`SequenceDataset`.
 """
 from __future__ import annotations
 
@@ -25,11 +29,16 @@ import random
 from typing import Dict, List, Optional, Type
 
 import numpy as np
+from PIL import Image, ImageFile
+from torch.utils.data import Dataset
 
-from vggt_omega.datasets.base_dataset import BaseDataset
 from vggt_omega.datasets.base_sequence import BaseSequence, Modality
+from vggt_omega.datasets.dataset_util import *  # noqa: F401,F403  (crop/resize/rotate helpers)
 from vggt_omega.datasets.dataset_util import depth_to_world_coords_points
 from vggt_omega.datasets.samplers.se3_sampler import sample_se3_trajectory
+
+Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def _resolve_sequence_cls(ref) -> Type[BaseSequence]:
@@ -44,8 +53,8 @@ def _resolve_sequence_cls(ref) -> Type[BaseSequence]:
     return ref
 
 
-class SequenceDataset(BaseDataset):
-    """Drive a :class:`BaseSequence` vendor through the :class:`BaseDataset` API.
+class SequenceDataset(Dataset):
+    """The unified VGGT-Omega dataset: drive any :class:`BaseSequence` vendor.
 
     Fully generic and config-driven: the concrete :class:`BaseSequence` backend is
     supplied via ``sequence_cls`` (a hydra class reference in YAML), so there is no
@@ -53,6 +62,9 @@ class SequenceDataset(BaseDataset):
     go through that class (``sequence_cls.discover`` /
     ``sequence_cls(data_root, seq_id, **sequence_kwargs)``); frame batches are
     sampled with the SE(3) arc-length sampler over a random ``[start, end]`` window.
+
+    Shared image processing (resize/crop/augment + depth->world/cam coordinate
+    conversion) lives directly on this class (formerly ``BaseDataset``).
     """
 
     def __init__(
@@ -69,8 +81,15 @@ class SequenceDataset(BaseDataset):
         min_num_images: int = 2,
         seq_name_prefix: Optional[str] = None,
     ):
-        super().__init__(common_conf=common_conf)
-        # per-dataset flags BaseDataset.get_data / ComposedDataset rely on.
+        super().__init__()
+        # Shared image-processing config (formerly BaseDataset.__init__).
+        self.img_size = common_conf.img_size
+        self.patch_size = common_conf.patch_size
+        self.aug_scale = common_conf.augs.scales
+        self.rescale = common_conf.rescale
+        self.rescale_aug = common_conf.rescale_aug
+        self.landscape_check = common_conf.landscape_check
+        # per-dataset flags get_data / ComposedDataset rely on.
         self.training = common_conf.training
         self.inside_random = common_conf.inside_random
         self.allow_duplicate_img = common_conf.allow_duplicate_img
@@ -262,3 +281,130 @@ class SequenceDataset(BaseDataset):
         h, w = hw
         f = float(max(h, w))
         return np.array([[f, 0.0, (w - 1) / 2.0], [0.0, f, (h - 1) / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+
+    # ------------------------------------------------------------------ #
+    # torch Dataset protocol (formerly BaseDataset)
+    # ------------------------------------------------------------------ #
+    def __len__(self):
+        return self.len_train
+
+    def __getitem__(self, idx_N):
+        """``idx_N`` is ``(seq_index, img_per_seq, aspect_ratio)`` from the dynamic
+        batch sampler; forwarded to :meth:`get_data`."""
+        seq_index, img_per_seq, aspect_ratio = idx_N
+        return self.get_data(
+            seq_index=seq_index, img_per_seq=img_per_seq, aspect_ratio=aspect_ratio
+        )
+
+    # ------------------------------------------------------------------ #
+    # shared image processing (formerly BaseDataset)
+    # ------------------------------------------------------------------ #
+    def get_target_shape(self, aspect_ratio):
+        """Target ``[height, width]`` for ``aspect_ratio``, snapped so the short
+        side is a multiple of ``patch_size`` (ViT-friendly)."""
+        short_size = int(self.img_size * aspect_ratio)
+        small_size = self.patch_size
+        if short_size % small_size != 0:
+            short_size = (short_size // small_size) * small_size
+        return np.array([short_size, self.img_size])
+
+    def process_one_image(
+        self,
+        image,
+        depth_map,
+        extri_opencv,
+        intri_opencv,
+        original_size,
+        target_image_shape,
+        track=None,
+        filepath=None,
+        safe_bound=4,
+    ):
+        """Resize/crop/augment one frame and convert its depth to world & camera
+        coordinates.
+
+        Returns ``(image, depth_map, extri_opencv, intri_opencv, world_coords_points,
+        cam_coords_points, point_mask, track)``. Intrinsics are updated to track every
+        geometric transform; the depth->world/cam conversion is the one numpy<-pose
+        boundary the rest of the pipeline relies on.
+        """
+        # Make copies to avoid in-place operations affecting original data
+        image = np.copy(image)
+        depth_map = np.copy(depth_map)
+        extri_opencv = np.copy(extri_opencv)
+        intri_opencv = np.copy(intri_opencv)
+        if track is not None:
+            track = np.copy(track)
+
+        # Apply random scale augmentation during training if enabled
+        if self.training and self.aug_scale:
+            random_h_scale, random_w_scale = np.random.uniform(
+                self.aug_scale[0], self.aug_scale[1], 2
+            )
+            # Avoid random padding by capping at 1.0
+            random_h_scale = min(random_h_scale, 1.0)
+            random_w_scale = min(random_w_scale, 1.0)
+            aug_size = original_size * np.array([random_h_scale, random_w_scale])
+            aug_size = aug_size.astype(np.int32)
+        else:
+            aug_size = original_size
+
+        # Move principal point to the image center and crop if necessary
+        image, depth_map, intri_opencv, track = crop_image_depth_and_intrinsic_by_pp(
+            image, depth_map, intri_opencv, aug_size, track=track, filepath=filepath,
+        )
+
+        original_size = np.array(image.shape[:2])  # update original_size
+        target_shape = target_image_shape
+
+        # Handle landscape vs. portrait orientation
+        rotate_to_portrait = False
+        if self.landscape_check:
+            if original_size[0] > 1.25 * original_size[1]:
+                if (target_image_shape[0] != target_image_shape[1]) and (np.random.rand() > 0.5):
+                    target_shape = np.array([target_image_shape[1], target_image_shape[0]])
+                    rotate_to_portrait = True
+
+        # Resize images and update intrinsics
+        if self.rescale:
+            image, depth_map, intri_opencv, track = resize_image_depth_and_intrinsic(
+                image, depth_map, intri_opencv, target_shape, original_size, track=track,
+                safe_bound=safe_bound,
+                rescale_aug=self.rescale_aug
+            )
+        else:
+            print("Not rescaling the images")
+
+        # Ensure final crop to target shape
+        image, depth_map, intri_opencv, track = crop_image_depth_and_intrinsic_by_pp(
+            image, depth_map, intri_opencv, target_shape, track=track, filepath=filepath, strict=True,
+        )
+
+        # Apply 90-degree rotation if needed
+        if rotate_to_portrait:
+            assert self.landscape_check
+            clockwise = np.random.rand() > 0.5
+            image, depth_map, extri_opencv, intri_opencv, track = rotate_90_degrees(
+                image,
+                depth_map,
+                extri_opencv,
+                intri_opencv,
+                clockwise=clockwise,
+                track=track,
+            )
+
+        # Convert depth to world and camera coordinates
+        world_coords_points, cam_coords_points, point_mask = (
+            depth_to_world_coords_points(depth_map, extri_opencv, intri_opencv)
+        )
+
+        return (
+            image,
+            depth_map,
+            extri_opencv,
+            intri_opencv,
+            world_coords_points,
+            cam_coords_points,
+            point_mask,
+            track,
+        )

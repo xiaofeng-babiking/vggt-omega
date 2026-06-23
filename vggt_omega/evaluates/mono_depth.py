@@ -36,7 +36,7 @@ Usage::
     #   "delta":   {"delta1": .., "delta2": .., "delta3": ..},
     # }
 
-Depth maps follow the dataset convention (``datasets/base_dataset.py``): float
+Depth maps follow the dataset convention (``datasets/sequence_dataset.py``): float
 ``(H, W)`` where ``0`` marks invalid pixels and ``< 0`` marks sky. Only
 strictly-positive, finite GT pixels with a strictly-positive, finite prediction
 are scored. Argument order follows :class:`BaseMetric`: **ground truth first,
