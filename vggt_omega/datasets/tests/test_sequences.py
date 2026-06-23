@@ -130,6 +130,20 @@ class BaseSequenceContract:
         ts = [s.get_timestamp(sid, i) for i in range(n)]
         assert ts == sorted(ts)
 
+    def test_get_poses_matches_get_pose(self):
+        # get_poses() returns all frame-sorted c2w poses; get_pose(i) == get_poses()[i].
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        if Modality.POSE not in s.get_modalities(sid):
+            return
+        poses = s.get_poses(sid)
+        n = s.get_length(sid)
+        assert len(poses) == n
+        for i in (0, n // 2, n - 1):
+            np.testing.assert_allclose(
+                poses[i].transform_matrix, s.get_pose(sid, i).transform_matrix, atol=1e-9
+            )
+
     # ----- parse (the base template) --------------------------------------- #
     def test_parse_stacks_in_order(self):
         s = self.make_sequence()

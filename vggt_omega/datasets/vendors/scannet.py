@@ -67,6 +67,7 @@ class ScannetSequence(BaseSequence):
         # Each frame: (color_path, depth_path, cam_path, frame_num).
         self._frames: List[Tuple[str, str, str, int]] = []
         self._intrinsic: Optional[np.ndarray] = None
+        self._poses: Optional[List[BaseSE3Pose]] = None  # lazily built/cached
 
         self.load_manifest()
         self.load_intrinsics()
@@ -154,14 +155,35 @@ class ScannetSequence(BaseSequence):
     def get_depth_confidence(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("ScanNet provides no depth confidence")
 
+    def read_pose_file(self, pose_file: str) -> np.ndarray:
+        """Decode one ``cam/%05d.npz`` to a ``(4, 4)`` c2w matrix."""
+        with np.load(pose_file) as cam:
+            return np.asarray(cam["pose"], dtype=np.float64).reshape(4, 4)
+
+    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
+        return os.path.join(self.seq_dir, "poses_cache.npz")
+
+    def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
+        """Frame-sorted c2w poses, combining the per-frame cam npz into one cache
+        file on first call (then a single read thereafter)."""
+        if self._poses is not None:
+            return self._poses
+        cache = self.get_poses_cache_file(sensor_id)
+        if os.path.exists(cache):
+            with np.load(cache) as data:
+                mats = np.asarray(data["poses"], dtype=np.float64)
+        else:
+            mats = np.stack([self.read_pose_file(fr[2]) for fr in self._frames], axis=0)
+            try:
+                np.savez(cache, poses=mats)
+            except OSError:
+                pass  # read-only data dir: still return the poses, just don't persist
+        self._poses = [NumpySE3Pose.from_rot_mat(m[:3, :3], m[:3, 3]) for m in mats]
+        return self._poses
+
     def get_pose(self, sensor_id: Union[int, str], frame_id: Union[int, str]) -> BaseSE3Pose:
         """Per-frame **camera-to-world** SE(3) pose (OpenCV optical frame)."""
-        _, c2w = self._read_cam(int(frame_id))
-        if c2w.shape != (4, 4):
-            raise ValueError(f"ScanNet {self.seq_id}: pose {frame_id} not (4,4): {c2w.shape}")
-        if not np.isfinite(c2w).all():
-            raise ValueError(f"ScanNet {self.seq_id}: pose {frame_id} is non-finite (tracking failure)")
-        return NumpySE3Pose.from_rot_mat(c2w[:3, :3], c2w[:3, 3])
+        return self.get_poses(sensor_id)[int(frame_id)]
 
     def get_extrinsic(self, src_sensor_id, dst_sensor_id) -> BaseSE3Pose:
         return NumpySE3Pose.identity(backend="numpy")

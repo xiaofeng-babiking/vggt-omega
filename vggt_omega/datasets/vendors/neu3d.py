@@ -99,6 +99,15 @@ class Neu3dSequence(BaseSequence):
         """Identity (static camera; no pose GT). POSE is not advertised."""
         return NumpySE3Pose.identity(backend="numpy")
 
+    def read_pose_file(self, pose_file: str) -> np.ndarray:
+        raise NotImplementedError("poses are not stored as per-frame files")
+
+    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
+        return ""  # single-file / computed source: no per-frame combine cache
+
+    def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
+        return [self.get_pose(sensor_id, i) for i in range(self.get_length(sensor_id))]
+
     def get_extrinsic(self, src_sensor_id, dst_sensor_id) -> BaseSE3Pose:
         return NumpySE3Pose.identity(backend="numpy")
 

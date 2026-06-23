@@ -59,7 +59,9 @@ class BaseSequence(ABC):
 
     # -- discovery (which sequence ids live under a data root) --------------- #
     @classmethod
-    def discover(cls, data_root: str, patterns: "Optional[List[str]]" = None) -> "List[str]":
+    def discover(
+        cls, data_root: str, patterns: "Optional[List[str]]" = None
+    ) -> "List[str]":
         """List the sequence ids under ``data_root`` (relative ids passable as
         ``seq_id`` to this class).
 
@@ -73,7 +75,7 @@ class BaseSequence(ABC):
         import os
 
         names = set()
-        for pat in (patterns or ["*"]):
+        for pat in patterns or ["*"]:
             for d in glob.glob(os.path.join(data_root, pat)):
                 if os.path.isdir(d):
                     names.add(os.path.relpath(d, data_root))
@@ -83,6 +85,7 @@ class BaseSequence(ABC):
     @abstractmethod
     def __init__(self, data_root: str, seq_id: str):
         """Initialize sequence."""
+
     @abstractmethod
     def load_manifest(self) -> None:
         """Load sequence manifest, e.g. global indices of files."""
@@ -103,6 +106,30 @@ class BaseSequence(ABC):
     @abstractmethod
     def get_modalities(self, sensor_id: Union[int, str]) -> set[Modality]:
         """Return the set of Modality a sensor provides (e.g. a lidar lacks RGB)."""
+
+    @abstractmethod
+    def read_pose_file(self, pose_file: str) -> np.ndarray:
+        """Decode ONE per-frame pose file at ``pose_file`` to a ``(4, 4)`` c2w matrix.
+        Used by :meth:`build_or_load_poses` to combine per-frame files into the cache.
+        """
+
+    @abstractmethod
+    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
+        """Preset combined-poses cache file path for ``sensor_id`` (e.g.
+        ``<seq_dir>/poses_cache.npz``). :meth:`build_or_load_poses` writes/reads it."""
+
+    @abstractmethod
+    def get_poses(self, sensor_id: Union[int, str]) -> "List[BaseSE3Pose]":
+        """All frame **camera-to-world** SE(3) poses for ``sensor_id``, frame-sorted.
+
+        Each vendor implements its own cache/read op so it owns the efficiency
+        decision. Per-frame-file vendors read the combined ``get_poses_cache_file``
+        if it exists, else build it once by combining the frame-sorted per-frame
+        pose files (decoded via :meth:`read_pose_file`) into one ``(N, 4, 4)`` cache
+        and writing it; later runs do a single read. Vendors whose poses come from a
+        single sequence-level file (or are computed) build the list directly and
+        cache nothing. :meth:`get_pose` then reduces to ``get_poses(...)[i]``.
+        """
 
     @abstractmethod
     def get_length(self, sensor_id: Union[int, str]) -> int:
@@ -271,7 +298,9 @@ class BaseSequence(ABC):
         image_dtype : ``"uint8"`` (transfer-light) or ``"float32"`` ([0,1]).
         """
         if image_dtype not in ("uint8", "float32"):
-            raise ValueError(f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}")
+            raise ValueError(
+                f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}"
+            )
 
         available = self.get_modalities(sensor_id)
         per_frame = available & self._PER_FRAME_MODALITIES
@@ -322,7 +351,9 @@ class BaseSequence(ABC):
                 )
             if Modality.POSE in requested:
                 cols[Modality.POSE].append(
-                    np.asarray(self.get_pose(sensor_id, f).transform_matrix, dtype=np.float32)
+                    np.asarray(
+                        self.get_pose(sensor_id, f).transform_matrix, dtype=np.float32
+                    )
                 )
             if Modality.TIMESTAMP in requested:
                 cols[Modality.TIMESTAMP].append(self.get_timestamp(sensor_id, f))

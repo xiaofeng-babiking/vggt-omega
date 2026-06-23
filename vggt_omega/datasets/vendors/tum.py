@@ -204,6 +204,15 @@ class TumSequence(BaseSequence):
         _, _, _, t_c2w, quat_xyzw = self._frames[int(frame_id)]
         return NumpySE3Pose.from_quat(quat_xyzw, t_c2w, scalar_last=True)
 
+    def read_pose_file(self, pose_file: str) -> np.ndarray:
+        raise NotImplementedError("poses are not stored as per-frame files")
+
+    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
+        return ""  # single-file / computed source: no per-frame combine cache
+
+    def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
+        return [self.get_pose(sensor_id, i) for i in range(self.get_length(sensor_id))]
+
     def get_extrinsic(
         self, src_sensor_id: Union[int, str], dst_sensor_id: Union[int, str]
     ) -> BaseSE3Pose:

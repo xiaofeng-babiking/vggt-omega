@@ -63,6 +63,7 @@ class MegaDepthSequence(BaseSequence):
         self._intrinsics_override = intrinsics
         # Each frame: (rgb_path, depth_path, cam_path, stem).
         self._frames: List[Tuple[str, str, str, str]] = []
+        self._poses: Optional[List[BaseSE3Pose]] = None
         self._intrinsic: Optional[np.ndarray] = None
         self.load_manifest()
         self.load_intrinsics()
@@ -146,12 +147,33 @@ class MegaDepthSequence(BaseSequence):
     def get_depth_confidence(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("MegaDepth provides no depth confidence")
 
+
+    def read_pose_file(self, pose_file: str) -> np.ndarray:
+        with safe_open(pose_file, framework="np") as f:
+            return np.asarray(f.get_tensor("cam2world"), dtype=np.float64).reshape(4, 4)
+
+    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
+        return os.path.join(self.seq_dir, "poses_cache.npz")
+
+    def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
+        if self._poses is not None:
+            return self._poses
+        cache = self.get_poses_cache_file(sensor_id)
+        if os.path.exists(cache):
+            with np.load(cache) as data:
+                mats = np.asarray(data["poses"], dtype=np.float64)
+        else:
+            mats = np.stack([self.read_pose_file(fr[2]) for fr in self._frames], axis=0)
+            try:
+                np.savez(cache, poses=mats)
+            except OSError:
+                pass
+        self._poses = [NumpySE3Pose.from_rot_mat(m[:3, :3], m[:3, 3]) for m in mats]
+        return self._poses
+
     def get_pose(self, sensor_id: Union[int, str], frame_id: Union[int, str]) -> BaseSE3Pose:
-        """Per-frame **camera-to-world** SE(3) pose (OpenCV axes)."""
-        _, c2w = self._read_cam(int(frame_id))
-        if c2w.shape != (4, 4) or not np.isfinite(c2w).all():
-            raise ValueError(f"MegaDepth {self.seq_id}: pose {frame_id} malformed/non-finite")
-        return NumpySE3Pose.from_rot_mat(c2w[:3, :3], c2w[:3, 3])
+        return self.get_poses(sensor_id)[int(frame_id)]
+
 
     def get_extrinsic(self, src_sensor_id, dst_sensor_id) -> BaseSE3Pose:
         return NumpySE3Pose.identity(backend="numpy")
