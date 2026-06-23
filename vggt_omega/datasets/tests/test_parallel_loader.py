@@ -441,11 +441,16 @@ def test_tum_get_sample_parallel_equals_serial():
         "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
         "dataset_configs": [
             {
-                "_target_": "vggt_omega.datasets.vendors.tum.TumDataset",
+                "_target_": "vggt_omega.datasets.sequence_dataset.SequenceDataset",
+                "sequence_cls": {
+                    "_target_": "hydra.utils.get_class",
+                    "path": "vggt_omega.datasets.vendors.tum.TumSequence",
+                },
                 "split": "train",
-                "TUM_DIR": TUM_DIR,
+                "data_root": TUM_DIR,
                 "sequences": ["rgbd_dataset_freiburg3_sitting_halfsphere"],
                 "len_train": 20,
+                "sequence_kwargs": {"assoc_max_diff": 0.02, "depth_scale": 5000.0},
             }
         ],
     }
