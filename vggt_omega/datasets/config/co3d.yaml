@@ -27,8 +27,6 @@ dataset:
       # Example: the survey gold-verified apple capture -- 170 frames in the
       # test split (85 in train; CO3D sequences are typically ~200 frames).
       sequences: ["apple/110_13072_25709"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       intrinsics: null
       min_num_images: 24

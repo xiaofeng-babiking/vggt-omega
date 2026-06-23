@@ -21,8 +21,6 @@ dataset:
       # Scene dirs to use, as names or glob patterns. ["heads"] = the single
       # heads/seq-01 test sequence; ["*"] = ALL scenes.
       scenes: ["heads"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       depth_scale: 1000.0
       # "proj" = depth registered to the color camera (use this); "raw" is the

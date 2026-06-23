@@ -274,8 +274,8 @@ class ComposedDataset(Dataset, ABC):
     def _build_sequence_index(self):
         """Flat map: global sequence index -> ``(vendor, local_idx, seq_name)``,
         built over the vendors' REAL ``sequence_list``. (``ConcatDataset``'s
-        ``cumulative_sizes`` use the virtual ``len_train``, so they cannot
-        enumerate real sequences.)"""
+        ``cumulative_sizes`` use the virtual per-vendor ``__len__`` (mixture
+        weight), so they cannot enumerate real sequences.)"""
         index = []
         for vendor in self.base_dataset.datasets:
             seq_list = getattr(vendor, "sequence_list", None)

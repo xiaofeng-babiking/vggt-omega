@@ -23,8 +23,6 @@ dataset:
       # ["*"] = ALL sequences in the split. 40753679 is a typical Training
       # scene (landscape 640x480 vga_wide, 405 frames).
       sequences: ["40753679"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       depth_scale: 1000.0
       intrinsics: null

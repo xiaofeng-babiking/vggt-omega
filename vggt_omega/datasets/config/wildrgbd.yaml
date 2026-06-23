@@ -27,8 +27,6 @@ dataset:
       # patterns (e.g. "apple" = all apple scenes, "apple/scene_*" likewise).
       # ["*"] = ALL sequences of the split under WILDRGBD_DIR.
       sequences: ["apple/scene_002"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       depth_scale: 1000.0
       intrinsics: null

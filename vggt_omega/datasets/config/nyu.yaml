@@ -26,8 +26,6 @@ dataset:
       # Sequences to run, as frame ids or glob patterns (e.g. "000*").
       # ["*"] = ALL 654 frames under {NYU_DIR}/val/nyu_images.
       sequences: ["00001"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       intrinsics: null
       min_num_images: 1

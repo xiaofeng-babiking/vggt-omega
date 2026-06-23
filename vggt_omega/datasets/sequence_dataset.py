@@ -75,8 +75,7 @@ class SequenceDataset(Dataset):
         sequences: Optional[List[str]] = None,
         *,
         sequence_kwargs: Optional[dict] = None,
-        len_train: int = 100000,
-        len_test: int = 10000,
+        mixture_weight: float = 1.0,
         split: str = "train",
         min_num_images: int = 2,
         seq_name_prefix: Optional[str] = None,
@@ -102,7 +101,21 @@ class SequenceDataset(Dataset):
         self.data_root = data_root
         self.sequence_kwargs = dict(sequence_kwargs or {})
         self.min_num_images = int(min_num_images)
-        self.len_train = len_train if split == "train" else len_test
+
+        # --- mixture weighting -------------------------------------------------
+        # ``__len__`` is this vendor's slice of one virtual epoch; with
+        # ``inside_random`` ComposedDataset/TupleConcatDataset draws a vendor with
+        # probability len_v / Σ len, so __len__ IS the mixture weight. We make that
+        # explicit: len_v = round(mixture_weight * samples_per_epoch), where
+        # samples_per_epoch is a single global knob in common_conf (default 100000).
+        if mixture_weight <= 0:
+            raise ValueError(f"mixture_weight must be > 0, got {mixture_weight}")
+        self.mixture_weight = float(mixture_weight)
+        samples_per_epoch = float(
+            common_conf.get("samples_per_epoch", 100000)
+            if hasattr(common_conf, "get") else getattr(common_conf, "samples_per_epoch", 100000)
+        )
+        self._epoch_samples = max(1, round(self.mixture_weight * samples_per_epoch))
         if seq_name_prefix is None:
             seq_name_prefix = self.sequence_cls.__name__.replace("Sequence", "").lower() + "_"
         self.seq_name_prefix = seq_name_prefix
@@ -286,7 +299,10 @@ class SequenceDataset(Dataset):
     # torch Dataset protocol (formerly BaseDataset)
     # ------------------------------------------------------------------ #
     def __len__(self):
-        return self.len_train
+        # This vendor's share of one virtual epoch == its mixture weight
+        # (round(mixture_weight * samples_per_epoch)). With inside_random, the
+        # vendor draw probability is len_v / Σ len_v across the ComposedDataset.
+        return self._epoch_samples
 
     def __getitem__(self, idx_N):
         """``idx_N`` is ``(seq_index, img_per_seq, aspect_ratio)`` from the dynamic

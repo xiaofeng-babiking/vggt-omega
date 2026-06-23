@@ -15,8 +15,8 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.hypersim.HypersimDataset
-      # No split files exist in this copy: `split` only selects len_train vs
-      # len_test; both splits see the same flat sequence collection.
+      # No split files exist in this copy; `split` is informational and both
+      # splits see the same flat sequence collection.
       split: train
       # Machine-specific path -- override for your environment.
       HYPERSIM_DIR: /jfs/Data_4DFF/train_data/hypersim
@@ -26,8 +26,6 @@ dataset:
       # HYPERSIM_DIR. The example below is the camera-0 trajectory of the first
       # scene: 98 frames (indices 000000..000099, non-contiguous).
       sequences: ["ai_001_001/cam_00"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       intrinsics: null
       enum_workers: 32

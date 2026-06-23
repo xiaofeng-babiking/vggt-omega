@@ -23,8 +23,6 @@ dataset:
       # ["*"] = ALL sequences under the split dir. "ani" is the survey-verified
       # train sequence with real camera motion; 1841 frames at 30 fps.
       sequences: ["ani"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # Optional [fx, fy, cx, cy] override; null = per-frame K from cam/%05d.npz.
       intrinsics: null

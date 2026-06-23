@@ -25,8 +25,6 @@ dataset:
       # The default below is the survey's gold-check segment, front camera:
       # 198 frames of 10 Hz driving video (segments run ~196-199 frames/camera).
       sequences: ["segment-10017090168044687777_6380_000_6400_000/cam1"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       cameras: [1, 2, 3, 4, 5]
       intrinsics: null

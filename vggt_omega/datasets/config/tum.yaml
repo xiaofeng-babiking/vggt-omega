@@ -25,7 +25,6 @@ dataset:
       # Sequences to run, as names or glob patterns (e.g. "rgbd_dataset_freiburg3_*").
       # ["*"] = ALL sequences under data_root.
       sequences: ["rgbd_dataset_freiburg3_walking_halfsphere"]
-      len_train: 100000
       min_num_images: 24
       # Forwarded to TumSequence(data_root, seq_id, **sequence_kwargs).
       sequence_kwargs:

@@ -22,8 +22,6 @@ dataset:
       # ["*"] = ALL sequences under MVS_SYNTH_DIR (120 sequences x 100 frames).
       # "0000" is the canonical example sequence: 100 frames, 960x540.
       sequences: ["0000"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       intrinsics: null
       min_num_images: 24

@@ -89,7 +89,6 @@ data:
           # Machine-specific path — override for your environment.
           data_root: ${oc.env:VGGT_EVAL_ROOT,/jfs/guibiao/streamVGGT/data/eval}/tum
           sequences: ["*"]
-          len_train: 100000
           min_num_images: 24
           sequence_kwargs:
             assoc_max_diff: 0.02

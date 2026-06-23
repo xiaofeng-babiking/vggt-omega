@@ -26,8 +26,6 @@ dataset:
       # canonical scene: a 317-frame ordered video at native 965x533, right at
       # the typical per-scene length (root median ~331 frames, range 26-450).
       sequences: ["0003dc82473fd52c53dcbdc2deb4e6e9c3548d6f8c9b03f9ea8d3c7d3ce33546"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # Optional [fx, fy, cx, cy] override; null = use each frame's npz K
       # (per-scene constant, principal point at the native image center).

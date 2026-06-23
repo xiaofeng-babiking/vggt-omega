@@ -24,8 +24,6 @@ dataset:
       # ["*"] (or null) = ALL 369 sequences under TARTANAIR_DIR.
       # The example below is a 434-frame Easy outdoor sequence.
       sequences: ["abandonedfactory/Easy/P001"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       valid_max: 1000.0
       sky_threshold: 10000.0

@@ -15,8 +15,8 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.megadepth.MegaDepthDataset
-      # No split files exist on disk (single flat collection); `split` only
-      # selects the virtual epoch length (len_train vs len_test).
+      # No split files exist on disk (single flat collection); `split` is
+      # informational here.
       split: train
       # Machine-specific path -- override for your environment.
       MEGADEPTH_DIR: /jfs/Data_4DFF/train_data/megadepth
@@ -27,8 +27,6 @@ dataset:
       # Example sequence 5017/0 is a 521-frame sequential DSLR scene (adjacent
       # frames strongly covisible, unlike the unordered Flickr scenes).
       sequences: ["5017/0"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # Zero out degenerate "ordinal" depth frames (< this many distinct positive
       # values, typically all 2.0); 0 disables the filter.

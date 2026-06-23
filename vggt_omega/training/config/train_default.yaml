@@ -92,8 +92,6 @@ data:
           split: train
           ARKITSCENES_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/arkitscenes
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           depth_scale: 1000.0
           intrinsics: null
@@ -102,16 +100,12 @@ data:
           split: train
           BLENDEDMVS_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/blendedmvs
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           min_num_images: 24
         - _target_: vggt_omega.datasets.vendors.co3d.Co3dDataset
           split: train
           CO3D_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/co3d
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -119,8 +113,6 @@ data:
           split: train
           DL3DV_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/dl3dv
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -128,8 +120,6 @@ data:
           split: train
           DYNAMIC_REPLICA_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/dynamic_replica_data
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           cameras: ["left", "right"]
           intrinsics: null
@@ -138,8 +128,6 @@ data:
           split: train
           HYPERSIM_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/hypersim
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           enum_workers: 32
@@ -148,8 +136,6 @@ data:
           split: train
           MEGADEPTH_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/megadepth
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           min_depth_unique: 5
           min_num_images: 24
@@ -157,8 +143,6 @@ data:
           split: train
           MVS_SYNTH_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/mvs_synth
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -166,8 +150,6 @@ data:
           split: train
           OMNIOBJECT3D_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/omniobject3d
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -175,8 +157,6 @@ data:
           split: train
           POINTODYSSEY_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/pointodyssey
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -184,8 +164,6 @@ data:
           split: train
           SCANNET_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/scannet
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           depth_scale: 1000.0
           frame_step: 1
@@ -196,8 +174,6 @@ data:
           split: train
           SPRING_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/spring
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           intrinsics: null
           min_num_images: 24
@@ -205,8 +181,6 @@ data:
           split: train
           TARTANAIR_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/tartanair
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           valid_max: 1000.0
           sky_threshold: 10000.0
@@ -216,8 +190,6 @@ data:
           split: train
           VKITTI_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/vkitti
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           depth_scale: 100.0
           intrinsics: null
@@ -226,8 +198,6 @@ data:
           split: train
           WAYMO_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/waymo
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           cameras: [1, 2, 3, 4, 5]
           intrinsics: null
@@ -237,8 +207,6 @@ data:
           split: train
           WILDRGBD_DIR: ${oc.env:VGGT_DATA_ROOT,/jfs/Data_4DFF/train_data}/wildrgbd
           sequences: ["*"]
-          len_train: 100000
-          len_test: 10000
           expand_ratio: 8
           depth_scale: 1000.0
           intrinsics: null

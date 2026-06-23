@@ -19,8 +19,7 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.omniobject3d.OmniObject3dDataset
-      # OmniObject3D ships only a train/ split; `split` only picks the virtual
-      # epoch length (len_train vs len_test), the data itself is identical.
+      # OmniObject3D ships only a train/ split; `split` is informational here.
       split: train
       # Machine-specific path -- override for your environment.
       OMNIOBJECT3D_DIR: /jfs/Data_4DFF/train_data/omniobject3d
@@ -29,8 +28,6 @@ dataset:
       # "toy_plane/*" all toy planes). ["*"] = ALL sequences under train/.
       # toy_plane/toy_plane_001 has 100 frames (like every OmniObject3D object).
       sequences: ["toy_plane/toy_plane_001"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       intrinsics: null
       min_num_images: 24

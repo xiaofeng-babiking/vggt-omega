@@ -27,8 +27,6 @@ dataset:
       # Sequences to run, as names or glob patterns (e.g. "rgbd_bonn_balloon*").
       # ["*"] = ALL sequences under {BONN_DIR}/rgbd_bonn_dataset.
       sequences: ["rgbd_bonn_balloon"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # "110" = the pre-associated 110-frame eval subset (published protocol);
       # "full" = the full streams with TUM-style nearest-timestamp association.

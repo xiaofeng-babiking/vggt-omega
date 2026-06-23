@@ -23,8 +23,6 @@ dataset:
       # "0001".."0047" WITH GAPS. ["*"] = ALL sequences under SPRING_DIR/<split>.
       # "0001" is the canonical example sequence (248 frames).
       sequences: ["0001"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # [fx, fy, cx, cy] override; null = per-frame K from cam/%04d.npz (varies
       # strongly ACROSS sequences -- never assume a global K).

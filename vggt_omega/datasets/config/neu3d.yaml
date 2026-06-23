@@ -28,8 +28,6 @@ dataset:
       # Sequences to run, as "<scene>/<cam>" names or glob patterns
       # (e.g. "cut_roasted_beef/*"). ["*"] = ALL sequences under NEU3D_DIR.
       sequences: ["cut_roasted_beef/cam00"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       image_variant: images
       intrinsics: null

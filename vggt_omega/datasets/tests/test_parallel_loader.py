@@ -92,7 +92,7 @@ class FakeVendor(Dataset):
         self.h, self.w = h, w
         self.sequence_list = ["seq0"]
         self.sequence_list_len = 1
-        self.len_train = num_frames
+        self._epoch_samples = num_frames
         self.available_modalities = self.AVAILABLE
         self.fail_on_ids = set(fail_on_ids)
         self.call_log = []  # one entry per get_data call (list.append is GIL-atomic)
@@ -104,7 +104,7 @@ class FakeVendor(Dataset):
         return (self.h, self.w)
 
     def __len__(self):
-        return self.len_train
+        return self._epoch_samples
 
     def get_target_shape(self, aspect_ratio):
         short_size = int(64 * aspect_ratio)
@@ -460,7 +460,6 @@ def test_tum_get_sample_parallel_equals_serial():
                 "split": "train",
                 "data_root": TUM_DIR,
                 "sequences": ["rgbd_dataset_freiburg3_sitting_halfsphere"],
-                "len_train": 20,
                 "sequence_kwargs": {"assoc_max_diff": 0.02, "depth_scale": 5000.0},
             }
         ],

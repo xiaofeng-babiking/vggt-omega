@@ -15,8 +15,8 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.kitti.KittiDataset
-      # Only val/ ships RGB-D video (train/ is GT-depth-only); `split` picks the
-      # virtual epoch length (len_train vs len_test) only.
+      # Only val/ ships RGB-D video (train/ is GT-depth-only); `split` is
+      # informational here.
       split: train
       # Machine-specific path -- override for your environment.
       KITTI_DIR: /jfs/guibiao/streamVGGT/data/eval/kitti
@@ -28,8 +28,6 @@ dataset:
       # range 5..N-6). The default below is the median-size drive, left color
       # camera -- 144 frames of ~10 Hz driving video.
       sequences: ["2011_09_26_drive_0005_sync/cam02"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       cameras: [2, 3]
       intrinsics: null

@@ -25,8 +25,6 @@ dataset:
       # Sequences to run, as names or glob patterns (e.g. "*_room").
       # ["*"] = ALL sequences under {NEURAL_RGBD_DIR}.
       sequences: ["breakfast_room"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       depth_scale: 1000.0
       depth_variant: depth

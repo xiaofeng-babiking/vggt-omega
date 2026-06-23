@@ -15,7 +15,7 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.dynamic_replica.DynamicReplicaDataset
-      # Only a 'train/' split exists on disk; `split` just picks len_train vs len_test.
+      # Only a 'train/' split exists on disk; `split` is informational here.
       split: train
       # Machine-specific path -- override for your environment.
       DYNAMIC_REPLICA_DIR: /jfs/Data_4DFF/train_data/dynamic_replica_data
@@ -25,8 +25,6 @@ dataset:
       # stream below is the canonical left (camera-0) stream: 300 frames
       # (10 s at 30 fps; every stream in the export has exactly 300 frames).
       sequences: ["009850-3_obj/left"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       # Stereo cameras to expose as independent sequences (left=CAMERA_ID 0,
       # right=1); each "<seq>/<camera>" stream is its own sequence.

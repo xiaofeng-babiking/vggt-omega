@@ -15,8 +15,7 @@ dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
     - _target_: vggt_omega.datasets.vendors.vkitti.VkittiDataset
-      # Only a single on-disk "train" split exists; `split` picks the virtual
-      # epoch length (len_train vs len_test) only.
+      # Only a single on-disk "train" split exists; `split` is informational here.
       split: train
       # Machine-specific path -- override for your environment.
       VKITTI_DIR: /jfs/Data_4DFF/train_data/vkitti
@@ -26,8 +25,6 @@ dataset:
       # frames each). Example below: Scene01's canonical clone variation, left
       # camera -- 447 frames.
       sequences: ["Scene01/clone/Camera_0"]
-      len_train: 100000
-      len_test: 10000
       expand_ratio: 8
       depth_scale: 100.0
       intrinsics: null
