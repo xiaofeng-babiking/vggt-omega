@@ -37,6 +37,9 @@ dependencies = [
     "trimesh==4.12.2",
     "matplotlib==3.10.9",
     "requests==2.34.2",
+    # inference CLI flags (gflags) + trajectory metrics (evo: ATE / RPE for camera pose)
+    "python-gflags==3.1.2",
+    "evo==1.36.5",
     # scipy / onnxruntime are locked at different versions per Python version
     "scipy==1.15.3; python_full_version < '3.11'",
     "scipy==1.17.1; python_full_version >= '3.11'",

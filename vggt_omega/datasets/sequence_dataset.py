@@ -230,11 +230,32 @@ class SequenceDataset(BaseDataset):
             "original_sizes": original_sizes,
             "is_metric": True,
             "is_video": True,
-            "modalities": set(mods),
+            # Advertise GT modalities in the inference-facing vocabulary
+            # (datasets.modality.Modality, plural keys) the eval / carry_extra
+            # path expects -- NOT the BaseSequence.Modality names.
+            "modalities": self._advertised_modalities(mods),
         }
         if timestamps is not None:
             batch["timestamps"] = np.asarray(timestamps, dtype=np.float64)
         return batch
+
+    @staticmethod
+    def _advertised_modalities(seq_mods) -> set:
+        """Translate the backend's :class:`base_sequence.Modality` set into the
+        inference-facing :class:`datasets.modality.Modality` GT set (plural keys
+        such as ``"depths"`` / ``"extrinsics"``). ``POSE`` is the per-frame
+        trajectory, advertised as EXTRINSICS (what the eval scores)."""
+        from vggt_omega.datasets.modality import Modality as EvalModality
+
+        mapping = {
+            Modality.RGB: EvalModality.IMAGE,
+            Modality.DEPTH: EvalModality.DEPTH,
+            Modality.POSE: EvalModality.EXTRINSICS,
+            Modality.EXTRINSIC: EvalModality.EXTRINSICS,
+            Modality.INTRINSIC: EvalModality.INTRINSICS,
+            Modality.TIMESTAMP: EvalModality.TIMESTAMP,
+        }
+        return {mapping[m] for m in seq_mods if m in mapping}
 
     @staticmethod
     def _placeholder_K(hw) -> np.ndarray:
