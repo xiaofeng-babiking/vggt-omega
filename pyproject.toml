@@ -40,6 +40,8 @@ dependencies = [
     # inference CLI flags (gflags) + trajectory metrics (evo: ATE / RPE for camera pose)
     "python-gflags==3.1.2",
     "evo==1.36.5",
+    # training: TensorBoard logging (SummaryWriter)
+    "tensorboard==2.20.0",
     # scipy / onnxruntime are locked at different versions per Python version
     "scipy==1.15.3; python_full_version < '3.11'",
     "scipy==1.17.1; python_full_version >= '3.11'",

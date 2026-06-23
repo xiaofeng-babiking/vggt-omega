@@ -219,6 +219,16 @@ class Trainer:
                 self.global_step += 1
                 step = self.global_step
                 self.loss_history.append(float(losses["total"].detach()))
+                if self.rank == 0 and log_interval and step % log_interval == 0:
+                    logger.info(
+                        f"step {step}/{max_steps} | total {float(losses['total'].detach()):.4f} "
+                        f"| camera {float(losses['camera'].detach()):.4f} "
+                        f"| depth {float(losses['depth'].detach()):.4f} "
+                        f"| point {float(losses['point'].detach()):.4f} "
+                        f"| match {float(losses['match'].detach()):.4f} "
+                        f"| lr {self.optimizer.param_groups[0]['lr']:.2e} "
+                        f"| {step_time:.2f}s"
+                    )
                 if self.writer is not None and log_interval and step % log_interval == 0:
                     self._log(
                         step, losses, predictions, batch, grad_norm, step_time,
