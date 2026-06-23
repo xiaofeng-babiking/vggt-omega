@@ -138,8 +138,10 @@ class SequenceDataset(BaseDataset):
             end = start + span - 1
         else:
             start, end = 0, n - 1
-        poses = [seq.get_pose(sensor, i) for i in range(n)]
-        indices, _ = sample_se3_trajectory(poses, num=num, start=start, end=end)
+        # The sampler reads poses on demand via seq.get_pose(sensor, k) for ONLY
+        # the [start, end] window (was: eager load of ALL n poses per sample, one
+        # disk read per frame of the whole sequence on per-frame-file vendors).
+        indices, _ = sample_se3_trajectory(seq, sensor, num=num, start=start, end=end)
         return np.asarray(indices, dtype=int)
 
     # ------------------------------------------------------------------ #

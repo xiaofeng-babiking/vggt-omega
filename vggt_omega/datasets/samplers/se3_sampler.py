@@ -16,15 +16,16 @@ The function is deterministic for a fixed ``(start, end)`` window; randomness is
 intended to come from the **caller** choosing/randomising that window.
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import numpy as np
 
-from vggt_omega.datasets.se3_pose import BaseSE3Pose
+from vggt_omega.datasets.base_sequence import BaseSequence
 
 
 def sample_se3_trajectory(
-    se3_poses: List[BaseSE3Pose],
+    seq: BaseSequence,
+    sensor: Union[int, str],
     num: int,
     start: int = 0,
     end: int = -1,
@@ -32,13 +33,19 @@ def sample_se3_trajectory(
     """Sample frame indices spaced ~uniformly in SE(3) arc-length.
 
     Per-frame gap is the SE(3) twist norm ``dₖ = ‖log(Pₖ₋₁⁻¹ Pₖ)‖`` (== the norm
-    of ``poses[k].boxminus(poses[k-1])``). The cumulative sum of these gaps over
-    the ``[start, end]`` window is the arc-length; ``num`` targets are placed at
-    equal arc-length and each is snapped to the nearest frame (by cumulative
-    arc-length), so dense-motion regions receive more samples than static ones.
+    of ``seq.get_pose(sensor, k).boxminus(seq.get_pose(sensor, k-1))``). The
+    cumulative sum of these gaps over the ``[start, end]`` window is the arc-length;
+    ``num`` targets are placed at equal arc-length and each is snapped to the nearest
+    frame (by cumulative arc-length), so dense-motion regions receive more samples
+    than static ones.
 
     Args:
-        se3_poses: ordered SE(3) poses (length ``N``). All must share one backend.
+        seq: the :class:`BaseSequence` to sample from. Poses are read on demand via
+            ``seq.get_pose(sensor, k)`` for ONLY the frames in ``[start, end]`` (the
+            window endpoints and every interior frame); frames outside the window are
+            never read -- so a per-frame-file vendor does at most ``window`` disk
+            reads, not one per frame of the whole sequence.
+        sensor: the sensor id passed to ``seq.get_pose`` / ``seq.get_length``.
         num: number of equal-arc-length targets to place (``>= 1``). The returned
             list may be **shorter** than ``num`` because duplicate snapped indices
             are removed (e.g. when several targets fall on the same frame across a
@@ -50,7 +57,7 @@ def sample_se3_trajectory(
     Returns:
         ``(indices, distances)`` of equal length:
 
-        * ``indices``: the selected absolute frame indices into ``se3_poses``,
+        * ``indices``: the selected absolute frame indices into ``seq``,
           **strictly increasing** (duplicates removed), with ``indices[0] == start``
           and ``indices[-1] == end``.
         * ``distances``: the SE(3) **arc-length** to each kept frame from the
@@ -63,9 +70,9 @@ def sample_se3_trajectory(
         ValueError: if ``num < 1``, the window is invalid, or the window is too
             small — requires ``end - start + 1 >= num``.
     """
-    n_poses = len(se3_poses)
+    n_poses = seq.get_length(sensor)
     if n_poses == 0:
-        raise ValueError("se3_poses is empty")
+        raise ValueError("seq is empty")
     if num < 1:
         raise ValueError(f"num must be >= 1, got {num}")
 
@@ -87,12 +94,16 @@ def sample_se3_trajectory(
 
     # Per-frame SE(3) motion gap over the window: gap[j] is the twist norm from
     # window-frame j-1 to j; cum[j] is the arc-length from `start` to frame start+j.
+    # Only poses in [start, end] are read here (window-local), so a per-frame-file
+    # vendor never loads frames outside the window.
     cum = np.zeros(window, dtype=np.float64)
+    prev = seq.get_pose(sensor, start)
     for j in range(1, window):
-        k = start + j
-        twist = se3_poses[k].boxminus(se3_poses[k - 1])  # log(P_{k-1}⁻¹ P_k)
+        cur = seq.get_pose(sensor, start + j)
+        twist = cur.boxminus(prev)  # log(P_{k-1}⁻¹ P_k)
         gap = float(np.linalg.norm(_to_numpy(twist)))
         cum[j] = cum[j - 1] + gap
+        prev = cur
     total = float(cum[-1])
 
     if total <= 0.0:
