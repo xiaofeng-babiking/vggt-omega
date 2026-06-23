@@ -144,6 +144,20 @@ class BaseSequenceContract:
                 poses[i].transform_matrix, s.get_pose(sid, i).transform_matrix, atol=1e-9
             )
 
+    def test_rgb_valid_mask_default_is_all_true(self):
+        # Vendors without valid annotations return an all-True (H, W) bool mask,
+        # shaped like RGB so it is safe for elementwise multiply.
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        if Modality.RGB not in s.get_modalities(sid):
+            return
+        if Modality.RGB_VALID_MASK in s.get_modalities(sid):
+            return  # vendors that advertise real valid masks are checked elsewhere
+        m = s.get_rgb_valid_mask(sid, 0)
+        assert m.dtype == bool
+        assert m.shape == s.get_rgb(sid, 0).shape[:2]
+        assert m.all()
+
     # ----- parse (the base template) --------------------------------------- #
     def test_parse_stacks_in_order(self):
         s = self.make_sequence()
@@ -969,9 +983,9 @@ def test_tum_unsupported_getters_raise(synthetic_tum):
     root, seq_id, _ = synthetic_tum
     s = TumSequence(root, seq_id)
     with pytest.raises(NotImplementedError):
-        s.get_semantic_mask(0, 0)
+        s.get_rgb_semantic_mask(0, 0)
     with pytest.raises(NotImplementedError):
-        s.get_dynamic_mask(0, 0)
+        s.get_rgb_dynamic_mask(0, 0)
     with pytest.raises(NotImplementedError):
         s.get_depth_confidence(0, 0)
     with pytest.raises(NotImplementedError):

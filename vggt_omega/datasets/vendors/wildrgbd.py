@@ -114,11 +114,18 @@ class WildRgbdSequence(BaseSequence):
         with Image.open(self._frames[int(frame_id)][0]) as im:
             return np.asarray(im.convert("RGB"), dtype=np.uint8)
 
-    def get_semantic_mask(self, sensor_id, frame_id) -> np.ndarray:
+    def get_rgb_semantic_mask(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("WildRGB-D provides no semantic masks")
 
-    def get_dynamic_mask(self, sensor_id, frame_id) -> np.ndarray:
+    def get_rgb_dynamic_mask(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("WildRGB-D provides no dynamic masks")
+
+    def get_rgb_valid_mask(self, sensor_id, frame_id) -> np.ndarray:
+        """No per-frame valid annotations: all-ones mask (True everywhere),
+        shape == RGB (H, W). Safe for elementwise multiply."""
+        h, w = self.get_rgb(sensor_id, frame_id).shape[:2]
+        return np.ones((h, w), dtype=bool)
+
 
     def get_depth(self, sensor_id: Union[int, str], frame_id: Union[int, str]) -> np.ndarray:
         """16-bit mm depth PNG -> ``(H, W)`` float32 metres (0 -> 0)."""
@@ -137,7 +144,20 @@ class WildRgbdSequence(BaseSequence):
             return np.asarray(cam["camera_pose"], dtype=np.float64).reshape(4, 4)
 
     def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
-        return os.path.join(self.seq_dir, "poses_cache.npz")
+        # Data lives under a read-only mount; mirror the seq dir under a writable
+        # root so poses_cache.npz can be written. Remap is overridable via
+        # VGGT_POSE_CACHE_REMAP="<src_prefix>:<dst_prefix>".
+        src, _, dst = os.environ.get(
+            "VGGT_POSE_CACHE_REMAP", "/jfs/Data_4DFF:/jfs/jing.feng/Data_4DFF"
+        ).partition(":")
+        seq_dir = os.path.abspath(self.seq_dir)
+        src, dst = os.path.abspath(src), os.path.abspath(dst)
+        cache_dir = dst + seq_dir[len(src):] if seq_dir.startswith(src) else seq_dir
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except OSError:
+            return ""
+        return os.path.join(cache_dir, "poses_cache.npz")
 
     def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
         if self._poses is not None:

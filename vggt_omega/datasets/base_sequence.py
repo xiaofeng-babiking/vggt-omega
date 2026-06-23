@@ -18,6 +18,7 @@ class Modality(str, Enum):
     RGB = "rgb"  # RGB image
     RGB_SEMANTIC_MASK = "rgb_semantic_mask"
     RGB_DYNAMIC_MASK = "rgb_dynamic_mask"
+    RGB_VALID_MASK = "rgb_valid_mask"
     DEPTH = "depth"  # depth image
     DEPTH_CONFIDENCE = "depth_confidence"  # 2D pixel confidence
     POSE = "pose"  # frame pose
@@ -50,6 +51,7 @@ class BaseSequence(ABC):
             Modality.RGB,
             Modality.RGB_SEMANTIC_MASK,
             Modality.RGB_DYNAMIC_MASK,
+            Modality.RGB_VALID_MASK,
             Modality.DEPTH,
             Modality.DEPTH_CONFIDENCE,
             Modality.POSE,
@@ -115,8 +117,11 @@ class BaseSequence(ABC):
 
     @abstractmethod
     def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
-        """Preset combined-poses cache file path for ``sensor_id`` (e.g.
-        ``<seq_dir>/poses_cache.npz``). :meth:`build_or_load_poses` writes/reads it."""
+        """Preset combined-poses cache file path for ``sensor_id``. Per-frame-file
+        vendors return a writable cache path (the dataset lives under a read-only
+        mount, so the cache mirrors the seq dir under a writable root); single-file /
+        computed-pose vendors return ``""`` (no cache)."""
+        
 
     @abstractmethod
     def get_poses(self, sensor_id: Union[int, str]) -> "List[BaseSE3Pose]":
@@ -149,16 +154,22 @@ class BaseSequence(ABC):
         """Get RGB image by sensor_id and frame_id."""
 
     @abstractmethod
-    def get_semantic_mask(
+    def get_rgb_semantic_mask(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
     ) -> np.ndarray:
         """Get per-pixel semantic-label mask, pixel-aligned to RGB."""
 
     @abstractmethod
-    def get_dynamic_mask(
+    def get_rgb_dynamic_mask(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
     ) -> np.ndarray:
         """Get moving-object mask (True = dynamic), pixel-aligned to RGB."""
+
+    @abstractmethod
+    def get_rgb_valid_mask(
+        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+    ) -> np.ndarray:
+        """Get valid mask (True = valid) to remove e.g. SKY pixels, pixel-aligned to RGB."""
 
     @abstractmethod
     def get_depth(
@@ -256,12 +267,12 @@ class BaseSequence(ABC):
         """Decode ONE sensor's frames into stacked, per-modality numpy arrays.
 
         Concrete template: composes the per-frame getters (``get_rgb`` /
-        ``get_depth`` / ``get_semantic_mask`` / ``get_dynamic_mask`` /
-        ``get_depth_confidence`` / ``get_pose`` / ``get_timestamp``), resizes to
-        ``image_size``, casts images per ``image_dtype`` and stacks each modality
-        along axis 0 in ``frame_ids`` order. Vendors implement only the getters +
-        :meth:`get_modalities` + :meth:`_frame_image_path`; they need not override
-        ``parse``.
+        ``get_depth`` / ``get_rgb_semantic_mask`` / ``get_rgb_dynamic_mask`` /
+        ``get_rgb_valid_mask`` / ``get_depth_confidence`` / ``get_pose`` /
+        ``get_timestamp``), resizes to ``image_size``, casts images per
+        ``image_dtype`` and stacks each modality along axis 0 in ``frame_ids``
+        order. Vendors implement only the getters + :meth:`get_modalities` +
+        :meth:`_frame_image_path`; they need not override ``parse``.
 
         INTRINSIC / EXTRINSIC are **not** parsed here: they are per-sequence
         *calibration* (the sensor camera matrix; the static inter-sensor
@@ -277,6 +288,7 @@ class BaseSequence(ABC):
             RGB                u8   [N, H, W, 3]   [0,255]  (f32 [0,1] if image_dtype="float32")
             RGB_SEMANTIC_MASK  i32  [N, H, W]      label ids
             RGB_DYNAMIC_MASK   bool [N, H, W]      True = dynamic
+            RGB_VALID_MASK     bool [N, H, W]      True = valid (e.g. non-sky)
             DEPTH              f32  [N, H, W]      metres · 0 = invalid · <0 = sky
             DEPTH_CONFIDENCE   f32  [N, H, W]
             POSE               f32  [N, 4, 4]      c2w (= get_pose(...).transform_matrix)
@@ -335,11 +347,15 @@ class BaseSequence(ABC):
                 cols[Modality.RGB].append(rgb)
             if Modality.RGB_SEMANTIC_MASK in requested:
                 cols[Modality.RGB_SEMANTIC_MASK].append(
-                    _resize(self.get_semantic_mask(sensor_id, f), Image.NEAREST)
+                    _resize(self.get_rgb_semantic_mask(sensor_id, f), Image.NEAREST)
                 )
             if Modality.RGB_DYNAMIC_MASK in requested:
                 cols[Modality.RGB_DYNAMIC_MASK].append(
-                    _resize(self.get_dynamic_mask(sensor_id, f), Image.NEAREST)
+                    _resize(self.get_rgb_dynamic_mask(sensor_id, f), Image.NEAREST)
+                )
+            if Modality.RGB_VALID_MASK in requested:
+                cols[Modality.RGB_VALID_MASK].append(
+                    _resize(self.get_rgb_valid_mask(sensor_id, f), Image.NEAREST)
                 )
             if Modality.DEPTH in requested:
                 cols[Modality.DEPTH].append(

@@ -243,11 +243,18 @@ class KittiSequence(BaseSequence):
         with Image.open(path) as im:
             return np.asarray(im.convert("RGB"), dtype=np.uint8)
 
-    def get_semantic_mask(self, sensor_id, frame_id) -> np.ndarray:
+    def get_rgb_semantic_mask(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("KITTI provides no semantic masks")
 
-    def get_dynamic_mask(self, sensor_id, frame_id) -> np.ndarray:
+    def get_rgb_dynamic_mask(self, sensor_id, frame_id) -> np.ndarray:
         raise NotImplementedError("KITTI provides no dynamic masks")
+
+    def get_rgb_valid_mask(self, sensor_id, frame_id) -> np.ndarray:
+        """No per-frame valid annotations: all-ones mask (True everywhere),
+        shape == RGB (H, W). Safe for elementwise multiply."""
+        h, w = self.get_rgb(sensor_id, frame_id).shape[:2]
+        return np.ones((h, w), dtype=bool)
+
 
     def get_depth(self, sensor_id: Union[int, str], frame_id: Union[int, str]) -> np.ndarray:
         """Benchmark GT depth PNG -> float32 metres (value / 256); 0 = invalid."""
