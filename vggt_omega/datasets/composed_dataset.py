@@ -17,8 +17,22 @@ import bisect
 from .dataset_util import *
 from .track_util import *
 from .augmentation import get_image_augmentation
-from .modality import carry_extra_modalities
 from .parallel_loader import parallel_get_data
+
+
+# Optional per-frame modality keys a vendor's get_data may attach beyond the core
+# (images/depths/extrinsics/...) tensorized explicitly in _tensorize. Maps the
+# sample-dict key -> numpy dtype used to tensorize it ("str" = keep as list). The
+# core keys are handled in _tensorize and are intentionally absent here.
+_EXTRA_MODALITY_DTYPES = {
+    "sky_masks": "bool",
+    "depth_confs": "float32",
+    "normals": "float32",
+    "semantics": "int32",
+    "texts": "str",
+    "timestamps": "float64",
+    "camera_ids": "int32",
+}
 
 
 class ComposedDataset(Dataset, ABC):
@@ -228,7 +242,27 @@ class ComposedDataset(Dataset, ABC):
             sample["track_vis_mask"] = track_vis_mask
             sample["track_positive_mask"] = track_positive_mask
 
-        sample = carry_extra_modalities(batch, sample)
+        sample = self._carry_extra_modalities(batch, sample)
+        return sample
+
+    @staticmethod
+    def _carry_extra_modalities(batch: dict, sample: dict) -> dict:
+        """Tensorize and copy any optional per-frame modality present in ``batch``
+        that ``_tensorize`` did not already place into ``sample`` (e.g. timestamps,
+        sky_masks), plus the ``modalities`` field. Mutates and returns ``sample``."""
+        for key, dtype in _EXTRA_MODALITY_DTYPES.items():
+            if key in sample or key not in batch or batch[key] is None:
+                continue
+            val = batch[key]
+            if dtype == "str":
+                sample[key] = list(val)
+            else:
+                arr = np.stack(val) if isinstance(val, list) else np.asarray(val)
+                sample[key] = torch.from_numpy(arr.astype(dtype))
+        if "modalities" in batch:
+            # Store as a sorted list of modality key strings so PyTorch's default
+            # collate can stack/batch the field (a set/frozenset is not collatable).
+            sample["modalities"] = sorted(str(m) for m in batch["modalities"])
         return sample
 
     # --- Explicit-ids eval/inference path -----------------------------------

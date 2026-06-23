@@ -29,7 +29,6 @@ import numpy as np
 from vggt_omega.datasets.base_dataset import BaseDataset
 from vggt_omega.datasets.base_sequence import BaseSequence, Modality
 from vggt_omega.datasets.dataset_util import depth_to_world_coords_points
-from vggt_omega.datasets.modality import carry_extra_modalities  # noqa: F401  (kept for parity)
 from vggt_omega.datasets.samplers.se3_sampler import sample_se3_trajectory
 
 
@@ -232,9 +231,9 @@ class SequenceDataset(BaseDataset):
             "original_sizes": original_sizes,
             "is_metric": True,
             "is_video": True,
-            # Advertise GT modalities in the inference-facing vocabulary
-            # (datasets.modality.Modality, plural keys) the eval / carry_extra
-            # path expects -- NOT the BaseSequence.Modality names.
+            # Advertise GT modalities as inference-facing key strings (plural
+            # sample-dict keys) the eval path expects -- NOT the
+            # BaseSequence.Modality names.
             "modalities": self._advertised_modalities(mods),
         }
         if timestamps is not None:
@@ -244,18 +243,17 @@ class SequenceDataset(BaseDataset):
     @staticmethod
     def _advertised_modalities(seq_mods) -> set:
         """Translate the backend's :class:`base_sequence.Modality` set into the
-        inference-facing :class:`datasets.modality.Modality` GT set (plural keys
-        such as ``"depths"`` / ``"extrinsics"``). ``POSE`` is the per-frame
-        trajectory, advertised as EXTRINSICS (what the eval scores)."""
-        from vggt_omega.datasets.modality import Modality as EvalModality
-
+        inference-facing GT key strings (plural sample-dict keys such as
+        ``"depths"`` / ``"extrinsics"``) that eval / _carry_extra_modalities
+        consume. ``POSE`` is the per-frame trajectory, advertised as ``extrinsics``
+        (what the eval scores)."""
         mapping = {
-            Modality.RGB: EvalModality.IMAGE,
-            Modality.DEPTH: EvalModality.DEPTH,
-            Modality.POSE: EvalModality.EXTRINSICS,
-            Modality.EXTRINSIC: EvalModality.EXTRINSICS,
-            Modality.INTRINSIC: EvalModality.INTRINSICS,
-            Modality.TIMESTAMP: EvalModality.TIMESTAMP,
+            Modality.RGB: "images",
+            Modality.DEPTH: "depths",
+            Modality.POSE: "extrinsics",
+            Modality.EXTRINSIC: "extrinsics",
+            Modality.INTRINSIC: "intrinsics",
+            Modality.TIMESTAMP: "timestamps",
         }
         return {mapping[m] for m in seq_mods if m in mapping}
 

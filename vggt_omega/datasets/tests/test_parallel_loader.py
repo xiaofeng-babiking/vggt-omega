@@ -13,7 +13,6 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from vggt_omega.datasets.base_dataset import BaseDataset
-from vggt_omega.datasets.modality import Modality
 from vggt_omega.datasets.parallel_loader import (
     merge_chunk_batches,
     parallel_get_data,
@@ -69,15 +68,15 @@ class FakeVendor(BaseDataset):
 
     AVAILABLE = frozenset(
         {
-            Modality.IMAGE,
-            Modality.DEPTH,
-            Modality.INTRINSICS,
-            Modality.EXTRINSICS,
-            Modality.POINT_MASK,
-            Modality.WORLD_POINTS,
-            Modality.CAM_POINTS,
-            Modality.SKY_MASK,
-            Modality.TIMESTAMP,
+            "images",
+            "depths",
+            "intrinsics",
+            "extrinsics",
+            "point_masks",
+            "world_points",
+            "cam_points",
+            "sky_masks",
+            "timestamps",
         }
     )
 
@@ -213,7 +212,7 @@ def _mini_batch(ids):
         "timestamps": np.array([float(i) for i in ids]),
         "tracks": None,
         "is_metric": True,
-        "modalities": {Modality.IMAGE},
+        "modalities": {"images"},
     }
 
 
@@ -236,7 +235,7 @@ def test_merge_stacks_lists_concats_arrays_and_sums_frame_num():
     assert merged["seq_name"] == "s"
     assert merged["is_metric"] is True
     assert merged["tracks"] is None
-    assert merged["modalities"] == {Modality.IMAGE}
+    assert merged["modalities"] == {"images"}
 
 
 def test_merge_single_chunk_is_identity_modulo_stacking():

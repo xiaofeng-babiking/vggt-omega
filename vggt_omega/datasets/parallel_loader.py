@@ -103,7 +103,7 @@ def parallel_get_data(vendor, seq_name, ids, aspect_ratio=1.0, num_workers=None)
 
     Returns a batch dict equivalent to the serial call, except per-frame lists
     of same-shape arrays come back pre-stacked as ``(V, ...)`` ndarrays (which
-    ``ComposedDataset._tensorize`` / ``carry_extra_modalities`` accept without
+    ``ComposedDataset._tensorize`` / ``_carry_extra_modalities`` accept without
     re-copying). Falls back to one serial call when parallelism is off
     (``num_workers <= 1``), the load is tiny, or the vendor has RNG-bearing
     flags enabled (``training`` / ``get_nearby``), whose shared global RNG
