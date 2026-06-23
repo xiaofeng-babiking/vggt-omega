@@ -14,25 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.arkitscenes.ArkitScenesDataset
-      # "train" -> Training/ (3344 valid scenes), "test" -> Test/ (23 valid scenes).
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.arkitscenes.ArkitScenesSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      ARKITSCENES_DIR: /jfs/Data_4DFF/train_data/arkitscenes
-      # Sequences to run, as scene ids or glob patterns (e.g. "407*").
-      # ["*"] = ALL sequences in the split. 40753679 is a typical Training
-      # scene (landscape 640x480 vga_wide, 405 frames).
-      sequences: ["40753679"]
-      expand_ratio: 8
-      depth_scale: 1000.0
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/arkitscenes
+      sequences: ["Training/40753679"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {split: Training, depth_scale: 1000.0, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

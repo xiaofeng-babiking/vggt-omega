@@ -21,23 +21,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.neu3d.Neu3dDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.neu3d.Neu3dSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      NEU3D_DIR: /jfs/guibiao/streamVGGT/data/eval/neu3d
-      # Sequences to run, as "<scene>/<cam>" names or glob patterns
-      # (e.g. "cut_roasted_beef/*"). ["*"] = ALL sequences under NEU3D_DIR.
+      data_root: /jfs/guibiao/streamVGGT/data/eval/neu3d
       sequences: ["cut_roasted_beef/cam00"]
-      expand_ratio: 8
-      image_variant: images
-      intrinsics: null
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {image_variant: images}
 common_config:
   img_size: 512
   patch_size: 16

@@ -14,27 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.tartanair.TartanAirDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.tartanair.TartanAirSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      TARTANAIR_DIR: /jfs/Data_4DFF/train_data/tartanair
-      # Sequences to run, as "env/Difficulty/P0XX" names or glob patterns; a
-      # pattern may also match a directory prefix (e.g. "abandonedfactory" =
-      # every sequence of that env, "*/Easy" = every Easy sequence).
-      # ["*"] (or null) = ALL 369 sequences under TARTANAIR_DIR.
-      # The example below is a 434-frame Easy outdoor sequence.
-      sequences: ["abandonedfactory/Easy/P001"]
-      expand_ratio: 8
-      valid_max: 1000.0
-      sky_threshold: 10000.0
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/tartanair
+      sequences: ["train/abandonedfactory/Easy/P001"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {valid_max: 1000.0, sky_threshold: 10000.0, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

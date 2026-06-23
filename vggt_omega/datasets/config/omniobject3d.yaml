@@ -18,25 +18,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.omniobject3d.OmniObject3dDataset
-      # OmniObject3D ships only a train/ split; `split` is informational here.
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.omniobject3d.OmniObject3DSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      OMNIOBJECT3D_DIR: /jfs/Data_4DFF/train_data/omniobject3d
-      # Sequences to run, as "category/object" names or glob patterns relative to
-      # train/ (a bare pattern such as "anise" globs a whole category, e.g.
-      # "toy_plane/*" all toy planes). ["*"] = ALL sequences under train/.
-      # toy_plane/toy_plane_001 has 100 frames (like every OmniObject3D object).
-      sequences: ["toy_plane/toy_plane_001"]
-      expand_ratio: 8
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/omniobject3d
+      sequences: ["train/toy_plane/toy_plane_001"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

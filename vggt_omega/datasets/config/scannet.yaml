@@ -18,25 +18,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.scannet.ScannetDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.scannet.ScannetSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      SCANNET_DIR: /jfs/Data_4DFF/train_data/scannet
-      # Sequences to run, as names or glob patterns (e.g. "scene0526_*").
-      # ["*"] = ALL sequences under {SCANNET_DIR}/scans_train.
-      sequences: ["scene0526_00"]
-      expand_ratio: 8
-      depth_scale: 1000.0
-      frame_step: 1
-      intrinsics: null
-      scans_subdir: scans_train
+      data_root: /jfs/Data_4DFF/train_data/scannet
+      sequences: ["scans_train/scene0526_00"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {scans_subdir: "", depth_scale: 1000.0, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

@@ -14,25 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.pointodyssey.PointOdysseyDataset
-      # Split directory to read: train (131 seqs), val (15) or test (13).
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.pointodyssey.PointOdysseySequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      POINTODYSSEY_DIR: /jfs/Data_4DFF/train_data/pointodyssey
-      # Sequences to run, as names or glob patterns (e.g. "ani1*").
-      # ["*"] = ALL sequences under the split dir. "ani" is the survey-verified
-      # train sequence with real camera motion; 1841 frames at 30 fps.
-      sequences: ["ani"]
-      expand_ratio: 8
-      # Optional [fx, fy, cx, cy] override; null = per-frame K from cam/%05d.npz.
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/pointodyssey
+      sequences: ["train/ani"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {split: train, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

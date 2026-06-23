@@ -19,22 +19,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.nyu.NyuDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.nyu.NyuSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      NYU_DIR: /jfs/guibiao/streamVGGT/data/eval/nyu
-      # Sequences to run, as frame ids or glob patterns (e.g. "000*").
-      # ["*"] = ALL 654 frames under {NYU_DIR}/val/nyu_images.
-      sequences: ["00001"]
-      expand_ratio: 8
-      intrinsics: null
+      data_root: /jfs/guibiao/streamVGGT/data/eval/nyu
+      sequences: ["val"]
       min_num_images: 1
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {}
 common_config:
   img_size: 512
   patch_size: 16

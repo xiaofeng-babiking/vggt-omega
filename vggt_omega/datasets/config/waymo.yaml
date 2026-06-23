@@ -14,28 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.waymo.WaymoDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.waymo.WaymoSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      WAYMO_DIR: /jfs/Data_4DFF/train_data/waymo
-      # Sequences to run, as names or glob patterns. One sequence = one segment x
-      # one camera, named "<segment short name>/cam<N>" (cam1=FRONT ... cam5=
-      # SIDE_RIGHT); a bare segment name/pattern matches all 5 of its cameras.
-      # ["*"] = ALL sequences under WAYMO_DIR (798 segments x 5 cams = 3990).
-      # The default below is the survey's gold-check segment, front camera:
-      # 198 frames of 10 Hz driving video (segments run ~196-199 frames/camera).
-      sequences: ["segment-10017090168044687777_6380_000_6400_000/cam1"]
-      expand_ratio: 8
-      cameras: [1, 2, 3, 4, 5]
-      intrinsics: null
-      use_blacklist: false
+      data_root: /jfs/Data_4DFF/train_data/waymo
+      sequences: ["train/segment-10017090168044687777_6380_000_6400_000_with_camera_labels.tfrecord"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {camera: 1, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

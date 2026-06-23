@@ -14,28 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.hypersim.HypersimDataset
-      # No split files exist in this copy; `split` is informational and both
-      # splits see the same flat sequence collection.
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.hypersim.HypersimSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      HYPERSIM_DIR: /jfs/Data_4DFF/train_data/hypersim
-      # Sequences to run, as "scene", "scene/cam_NN" or glob patterns of either
-      # form (e.g. "ai_001_*", "ai_001_001/cam_0[02]").
-      # ["*"] = ALL sequences (753 usable scene/cam_NN trajectories) under
-      # HYPERSIM_DIR. The example below is the camera-0 trajectory of the first
-      # scene: 98 frames (indices 000000..000099, non-contiguous).
+      data_root: /jfs/Data_4DFF/train_data/hypersim
       sequences: ["ai_001_001/cam_00"]
-      expand_ratio: 8
-      intrinsics: null
-      enum_workers: 32
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

@@ -14,31 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.dynamic_replica.DynamicReplicaDataset
-      # Only a 'train/' split exists on disk; `split` is informational here.
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.dynamic_replica.DynamicReplicaSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      DYNAMIC_REPLICA_DIR: /jfs/Data_4DFF/train_data/dynamic_replica_data
-      # Sequences to run, as names or glob patterns matched against the sequence
-      # dir ("009850-3_obj") or the per-camera stream ("009850-3_obj/left").
-      # ["*"] = ALL 966 streams (483 sequence dirs x left/right). The example
-      # stream below is the canonical left (camera-0) stream: 300 frames
-      # (10 s at 30 fps; every stream in the export has exactly 300 frames).
-      sequences: ["009850-3_obj/left"]
-      expand_ratio: 8
-      # Stereo cameras to expose as independent sequences (left=CAMERA_ID 0,
-      # right=1); each "<seq>/<camera>" stream is its own sequence.
-      cameras: ["left", "right"]
-      # [fx, fy, cx, cy] override; null = the per-frame on-disk K (globally
-      # constant fx=fy=700, cx=640, cy=360 for the native 1280x720 frame).
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/dynamic_replica_data
+      sequences: ["train/009850-3_obj/left"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

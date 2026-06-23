@@ -18,23 +18,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.sintel.SintelDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.sintel.SintelSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      SINTEL_DIR: /jfs/guibiao/streamVGGT/data/eval/sintel
-      # Sequences to run, as names or glob patterns (e.g. "ambush_*").
-      # ["*"] = ALL sequences under {SINTEL_DIR}/training/{render_pass}.
-      sequences: ["alley_1"]
-      expand_ratio: 8
-      render_pass: final
-      sky_threshold: 1000.0
+      data_root: /jfs/guibiao/streamVGGT/data/eval/sintel
+      sequences: ["training/final/alley_1"]
       min_num_images: 8
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {render_pass: final, sky_threshold: 1000.0, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

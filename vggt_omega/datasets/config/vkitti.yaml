@@ -14,27 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.vkitti.VkittiDataset
-      # Only a single on-disk "train" split exists; `split` is informational here.
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.vkitti.VkittiSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      VKITTI_DIR: /jfs/Data_4DFF/train_data/vkitti
-      # Sequences to run: camera-stream names "Scene/variation/Camera_N", as exact
-      # names or glob/prefix patterns (e.g. "Scene01/clone" selects both cameras).
-      # ["*"] = ALL 100 streams (5 scenes x 10 variations x 2 cameras, 233..837
-      # frames each). Example below: Scene01's canonical clone variation, left
-      # camera -- 447 frames.
-      sequences: ["Scene01/clone/Camera_0"]
-      expand_ratio: 8
-      depth_scale: 100.0
-      intrinsics: null
+      data_root: /jfs/Data_4DFF/train_data/vkitti
+      sequences: ["train/Scene01/clone/Camera_0"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {depth_scale: 100.0, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

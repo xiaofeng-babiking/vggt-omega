@@ -14,23 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.seven_scenes.SevenScenesDataset
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.seven_scenes.SevenScenesSequence}
       split: test
-      # Machine-specific path -- override for your environment.
-      SEVEN_SCENES_DIR: /jfs/guibiao/streamVGGT/data/eval/7scenes
-      # Scene dirs to use, as names or glob patterns. ["heads"] = the single
-      # heads/seq-01 test sequence; ["*"] = ALL scenes.
-      scenes: ["heads"]
-      expand_ratio: 8
-      depth_scale: 1000.0
-      # "proj" = depth registered to the color camera (use this); "raw" is the
-      # unregistered depth-sensor frame.
-      depth_variant: proj
-      frame_step: 1
-      intrinsics: null
+      data_root: /jfs/guibiao/streamVGGT/data/eval/7scenes
+      sequences: ["heads"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
+      sequence_kwargs: {depth_scale: 1000.0, depth_variant: proj, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

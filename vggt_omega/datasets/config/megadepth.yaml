@@ -14,30 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.megadepth.MegaDepthDataset
-      # No split files exist on disk (single flat collection); `split` is
-      # informational here.
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.megadepth.MegaDepthSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      MEGADEPTH_DIR: /jfs/Data_4DFF/train_data/megadepth
-      # Sequences to run, as "SCENE/SUB" names or glob patterns. A pattern with
-      # '/' matches scene and sub separately ("0000/0", "*/1"); one without '/'
-      # matches the scene name and selects ALL its sub-reconstructions ("0000",
-      # "00*"). ["*"] = ALL 210 scene-sub sequences under MEGADEPTH_DIR.
-      # Example sequence 5017/0 is a 521-frame sequential DSLR scene (adjacent
-      # frames strongly covisible, unlike the unordered Flickr scenes).
+      data_root: /jfs/Data_4DFF/train_data/megadepth
       sequences: ["5017/0"]
-      expand_ratio: 8
-      # Zero out degenerate "ordinal" depth frames (< this many distinct positive
-      # values, typically all 2.0); 0 disables the filter.
-      min_depth_unique: 5
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {min_depth_unique: 5, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16

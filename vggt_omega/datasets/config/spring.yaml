@@ -14,28 +14,13 @@
 dataset:
   _target_: vggt_omega.datasets.composed_dataset.ComposedDataset
   dataset_configs:
-    - _target_: vggt_omega.datasets.vendors.spring.SpringDataset
-      # Only `train/` exists in this preprocessed export (37 sequences).
+    - _target_: vggt_omega.datasets.sequence_dataset.SequenceDataset
+      sequence_cls: {_target_: hydra.utils.get_class, path: vggt_omega.datasets.vendors.spring.SpringSequence}
       split: train
-      # Machine-specific path -- override for your environment.
-      SPRING_DIR: /jfs/Data_4DFF/train_data/spring
-      # Sequences to run, as names or glob patterns (e.g. "00*"). Names are
-      # "0001".."0047" WITH GAPS. ["*"] = ALL sequences under SPRING_DIR/<split>.
-      # "0001" is the canonical example sequence (248 frames).
-      sequences: ["0001"]
-      expand_ratio: 8
-      # [fx, fy, cx, cy] override; null = per-frame K from cam/%04d.npz (varies
-      # strongly ACROSS sequences -- never assume a global K).
-      intrinsics: null
-      # Lazy enumeration: shorter sequences are kept + warned, not dropped
-      # (Spring has 13- and 19-frame sequences; usable with explicit ids).
+      data_root: /jfs/Data_4DFF/train_data/spring
+      sequences: ["train/0001"]
       min_num_images: 24
-
-# --- common_config: shared tensorization, with deterministic-eval overrides --
-# Inherited from training (datasets/config/default_dataset.yaml) except the
-# commented lines, which reproduce deterministic eval geometry: no scale/colour
-# augmentation, explicit ordered ids honored verbatim (no random remap / nearby
-# window / duplicates).
+      sequence_kwargs: {split: train, intrinsics: null}
 common_config:
   img_size: 512
   patch_size: 16
