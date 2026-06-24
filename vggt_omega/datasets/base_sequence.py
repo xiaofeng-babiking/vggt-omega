@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Union, List, Optional, Tuple
+from typing import TYPE_CHECKING, Union, List, Optional, Tuple, Dict, Literal
 
+import os
+import imagesize
 import numpy as np
+import networkx as nx
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -17,15 +20,18 @@ class Modality(str, Enum):
     # Per-Frame Data
     RGB = "rgb"  # RGB image
     RGB_SEMANTIC_MASK = "rgb_semantic_mask"
+    RGB_INSTANCE_MASK = "rgb_instance_mask"
     RGB_DYNAMIC_MASK = "rgb_dynamic_mask"
     RGB_VALID_MASK = "rgb_valid_mask"
     DEPTH = "depth"  # depth image
     DEPTH_CONFIDENCE = "depth_confidence"  # 2D pixel confidence
+    FLOW = "flow"  # flow map
     POSE = "pose"  # frame pose
     TIMESTAMP = "timestamp"
+    TRACK = "track"  # pixel correspondence of each track within each frame
+    TRACK_VISIBILITY = "track_visibility"  # visibility of each track within each frame
     # Per-Sequence Data
     POINTCLOUD = "pointcloud"  # 3D sparse/dense pointcloud
-    TRACK = "track"  # 2D pixel tracking across frames
     INTRINSIC = "intrinsic"  # camera intrinsics
     EXTRINSIC = "extrinsic"  # camera extrinsics, i.e. frame pose
 
@@ -40,24 +46,6 @@ class BaseSequence(ABC):
     ``sensor_id`` / ``frame_id`` are ``int`` indices or native ``str`` keys; the
     pixel getters decode lazily on access.
     """
-
-    # Modalities ``parse`` stacks per frame. INTRINSIC / EXTRINSIC are NOT here:
-    # they are per-sequence *calibration* (a sensor's camera matrix; the static
-    # inter-sensor transform), fetched via get_intrinsic(sensor_id) /
-    # get_extrinsic(src, dst) — not per-frame. POSE (the moving trajectory) is the
-    # only geometry that varies per frame. POINTCLOUD / TRACK are per-sequence.
-    _PER_FRAME_MODALITIES = frozenset(
-        {
-            Modality.RGB,
-            Modality.RGB_SEMANTIC_MASK,
-            Modality.RGB_DYNAMIC_MASK,
-            Modality.RGB_VALID_MASK,
-            Modality.DEPTH,
-            Modality.DEPTH_CONFIDENCE,
-            Modality.POSE,
-            Modality.TIMESTAMP,
-        }
-    )
 
     # -- discovery (which sequence ids live under a data root) --------------- #
     @classmethod
@@ -84,57 +72,51 @@ class BaseSequence(ABC):
         return sorted(names)
 
     # -- lifecycle ----------------------------------------------------------- #
-    @abstractmethod
-    def __init__(self, data_root: str, seq_id: str):
+    def __init__(
+        self,
+        data_root: str,
+        seq_id: str,
+        cache_dir: Optional[str] = None,
+        *args,
+        **kwargs,
+    ):
         """Initialize sequence."""
+        self._data_root = data_root
+        self._seq_id = seq_id
+        self._cache_dir = cache_dir
+        self._seq_dir = self.get_sequence_path()
+        self._manifest = self.load_manifest()
+        self._calib_tree = self.load_calibration_tree()
+
+    def get_sequence_directory(self, data_root: str, seq_id: str) -> str:
+        """Return sequence directory by data root path and sequence id."""
+        return os.path.join(data_root, seq_id)
 
     @abstractmethod
-    def load_manifest(self) -> None:
+    def load_manifest(self) -> Dict[Union[int, str], Dict[Modality, str]]:
         """Load sequence manifest, e.g. global indices of files."""
 
     @abstractmethod
-    def load_extrinsics(self):
-        """Load extrinsics calibration, i.e. relative pose between sensors."""
+    def load_calibration_tree(self) -> nx.DiGraph:
+        """Load extrinsics calibration tree, i.e. relative pose between sensors."""
 
-    @abstractmethod
-    def load_intrinsics(self):
-        """Load sensor intrinsics, e.g. camera matrix."""
+    def get_frame_file(
+        self,
+        sensor_id: Union[int, str],
+        modality: Modality,
+        frame_id: int,
+    ):
+        """Get frame file path."""
+        return self._manifest[sensor_id][modality][frame_id]
 
     # -- discovery (cheap metadata; never triggers a decode) ----------------- #
-    @abstractmethod
-    def get_sensors(self) -> list[Union[int, str]]:
+    def get_sensors(self) -> List[Union[int, str]]:
         """List available sensor ids. Each sensor is one synced frame timeline."""
+        return list(self._manifest.keys())
 
     @abstractmethod
     def get_modalities(self, sensor_id: Union[int, str]) -> set[Modality]:
         """Return the set of Modality a sensor provides (e.g. a lidar lacks RGB)."""
-
-    @abstractmethod
-    def read_pose_file(self, pose_file: str) -> np.ndarray:
-        """Decode ONE per-frame pose file at ``pose_file`` to a ``(4, 4)`` c2w matrix.
-        Used by :meth:`build_or_load_poses` to combine per-frame files into the cache.
-        """
-
-    @abstractmethod
-    def get_poses_cache_file(self, sensor_id: Union[int, str]) -> str:
-        """Preset combined-poses cache file path for ``sensor_id``. Per-frame-file
-        vendors return a writable cache path (the dataset lives under a read-only
-        mount, so the cache mirrors the seq dir under a writable root); single-file /
-        computed-pose vendors return ``""`` (no cache)."""
-        
-
-    @abstractmethod
-    def get_poses(self, sensor_id: Union[int, str]) -> "List[BaseSE3Pose]":
-        """All frame **camera-to-world** SE(3) poses for ``sensor_id``, frame-sorted.
-
-        Each vendor implements its own cache/read op so it owns the efficiency
-        decision. Per-frame-file vendors read the combined ``get_poses_cache_file``
-        if it exists, else build it once by combining the frame-sorted per-frame
-        pose files (decoded via :meth:`read_pose_file`) into one ``(N, 4, 4)`` cache
-        and writing it; later runs do a single read. Vendors whose poses come from a
-        single sequence-level file (or are computed) build the list directly and
-        cache nothing. :meth:`get_pose` then reduces to ``get_poses(...)[i]``.
-        """
 
     @abstractmethod
     def get_length(self, sensor_id: Union[int, str]) -> int:
@@ -154,6 +136,13 @@ class BaseSequence(ABC):
         """Get RGB image by sensor_id and frame_id."""
 
     @abstractmethod
+    def get_rgb_size(self, sensor_id: Union[int, str]) -> Tuple[int, int]:
+        """Get RGB imagesize."""
+        rgb_file = self._manifest[sensor_id][Modality.RGB][0]
+        w, h = imagesize.get(rgb_file)
+        return h, w
+
+    @abstractmethod
     def get_rgb_semantic_mask(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
     ) -> np.ndarray:
@@ -168,7 +157,7 @@ class BaseSequence(ABC):
     @abstractmethod
     def get_rgb_valid_mask(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> np.ndarray:
+    ) -> Optional[np.ndarray]:
         """Get valid mask (True = valid) to remove e.g. SKY pixels, pixel-aligned to RGB."""
 
     @abstractmethod
@@ -184,7 +173,15 @@ class BaseSequence(ABC):
         """Get per-pixel depth confidence, aligned to depth."""
 
     @abstractmethod
-    def get_pose(self, sensor_id: Union[int, str], frame_id: Union[int, str]):
+    def get_poses(
+        self, sensor_id: Union[int, str], cache_dir: Optional[str] = None
+    ) -> np.ndarray:
+        """Get all frame poses for a specific sensor."""
+
+    @abstractmethod
+    def get_pose(
+        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+    ) -> np.ndarray:
         """Get per-frame SE3 pose."""
 
     @abstractmethod
@@ -193,33 +190,12 @@ class BaseSequence(ABC):
     ) -> BaseSE3Pose:
         """Get extrinsic i.e. static SE3 transform from source to target sensor id."""
 
-    @abstractmethod
     def get_intrinsic(
         self,
         sensor_id: Union[int, str],
     ) -> np.ndarray:
         """Get intrinsic, e.g. camera matrix."""
-
-    # -- image-size helpers (manifest-backed; concrete in the base) ---------- #
-    @abstractmethod
-    def _frame_image_path(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> str:
-        """Path to the (undecoded) RGB file for a frame.
-
-        The base owns the generic header read / intrinsic rescale; only this
-        manifest-specific lookup is per-vendor, since the manifest schema (where
-        file paths live) is private to each subclass."""
-
-    @staticmethod
-    def read_image_size(path: str) -> Tuple[int, int]:
-        """Read an image's ``(H, W)`` from its header — no pixel decode.
-
-        Generic primitive shared by all vendors; keeps the metadata / sampler path
-        decode-free (PIL reads dimensions without decompressing the image)."""
-        with Image.open(path) as im:
-            w, h = im.size  # PIL reports (W, H)
-        return (h, w)
+        return self._calib_tree.nodes[sensor_id].intrinsic
 
     def scaled_intrinsic(
         self,
@@ -237,7 +213,7 @@ class BaseSequence(ABC):
         K = np.asarray(self.get_intrinsic(sensor_id), dtype=np.float32).copy()
         if image_size is None:
             return K
-        h0, w0 = self.read_image_size(self._frame_image_path(sensor_id, 0))
+        h0, w0 = self.get_rgb_size(sensor_id)
         sy = image_size[0] / float(h0)
         sx = image_size[1] / float(w0)
         K[0, 0] *= sx  # fx
@@ -252,8 +228,19 @@ class BaseSequence(ABC):
         """Get 3D tracks and mask."""
 
     @abstractmethod
-    def get_pointcloud(self) -> np.ndarray:
+    def get_pointcloud(
+        self, sensor_id: Union[int, str], frame_ids: Optional[List[int]] = None
+    ) -> np.ndarray:
         """Get sparse/dense pointcloud."""
+
+    @staticmethod
+    def _resize(
+        img: np.ndarray, img_size: Optional[Tuple[int, int]], interp: int
+    ) -> np.ndarray:
+        if img_size is None:
+            return img
+        h, w = img_size
+        return np.asarray(Image.fromarray(img).resize((w, h), interp))
 
     def parse(
         self,
@@ -261,7 +248,7 @@ class BaseSequence(ABC):
         frame_ids: List[Union[int, str]],
         modalities: Optional[set[Modality]] = None,
         image_size: Optional[tuple[int, int]] = None,
-        image_dtype: str = "uint8",
+        image_dtype: Literal["uint8", "float32"] = "uint8",
         num_workers: int = 0,
     ) -> dict[Modality, np.ndarray]:
         """Decode ONE sensor's frames into stacked, per-modality numpy arrays.
@@ -287,12 +274,18 @@ class BaseSequence(ABC):
 
             RGB                u8   [N, H, W, 3]   [0,255]  (f32 [0,1] if image_dtype="float32")
             RGB_SEMANTIC_MASK  i32  [N, H, W]      label ids
+            RGB_INSTANCE_MASK  i32  [N, H, W]      instance ids
             RGB_DYNAMIC_MASK   bool [N, H, W]      True = dynamic
             RGB_VALID_MASK     bool [N, H, W]      True = valid (e.g. non-sky)
-            DEPTH              f32  [N, H, W]      metres · 0 = invalid · <0 = sky
+            DEPTH              f32  [N, H, W]      metres · <=0 = invalid
             DEPTH_CONFIDENCE   f32  [N, H, W]
             POSE               f32  [N, 4, 4]      c2w (= get_pose(...).transform_matrix)
             TIMESTAMP          f64  [N]            seconds
+            FLOW               f32  [N, H, W, 2]   flow between consecutive frames
+            TRACK              i32  [N, T, 2]      tracks
+            TRACK_VISIBILITY   bool [N, T]
+
+            POINTCLOUD         f32  [M, *]         pointcloud
 
         Parameters
         ----------
@@ -310,20 +303,10 @@ class BaseSequence(ABC):
         image_dtype : ``"uint8"`` (transfer-light) or ``"float32"`` ([0,1]).
         """
         if image_dtype not in ("uint8", "float32"):
-            raise ValueError(
-                f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}"
-            )
+            raise ValueError(f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}")
 
         available = self.get_modalities(sensor_id)
-        per_frame = available & self._PER_FRAME_MODALITIES
-        requested = set(modalities) if modalities is not None else set(per_frame)
-
-        non_per_frame = requested - self._PER_FRAME_MODALITIES
-        if non_per_frame:
-            raise ValueError(
-                f"parse handles per-frame modalities only; got "
-                f"{sorted(m.value for m in non_per_frame)}"
-            )
+        requested = set(modalities) if modalities is not None else set(available)
         unavailable = requested - available
         if unavailable:
             raise ValueError(
@@ -331,54 +314,69 @@ class BaseSequence(ABC):
                 f"{sorted(m.value for m in unavailable)}"
             )
 
-        def _resize(arr: "np.ndarray", interp: int) -> "np.ndarray":
-            if image_size is None:
-                return arr
-            return np.asarray(
-                Image.fromarray(arr).resize((image_size[1], image_size[0]), interp)
+        # Per-frame modalities decoded by looping frame_ids (stacked along axis 0).
+        # Each entry: (getter, PIL interp, output dtype, optional post-fn).
+        frame_ids = list(frame_ids)
+        nearest, bilinear = Image.NEAREST, Image.BILINEAR
+
+        def _rgb(i):
+            img = self._resize(self.get_rgb(sensor_id, i), image_size, bilinear)
+            return img.astype(np.float32) / 255.0 if image_dtype == "float32" else img
+
+        per_frame = {
+            Modality.RGB: (_rgb, None),
+            Modality.RGB_SEMANTIC_MASK: (
+                lambda i: self._resize(self.get_rgb_semantic_mask(sensor_id, i), image_size, nearest),
+                np.int32,
+            ),
+            Modality.RGB_DYNAMIC_MASK: (
+                lambda i: self._resize(self.get_rgb_dynamic_mask(sensor_id, i), image_size, nearest),
+                bool,
+            ),
+            Modality.RGB_VALID_MASK: (
+                lambda i: self._resize(self.get_rgb_valid_mask(sensor_id, i), image_size, nearest),
+                bool,
+            ),
+            Modality.DEPTH: (
+                lambda i: self._resize(self.get_depth(sensor_id, i), image_size, nearest),
+                np.float32,
+            ),
+            Modality.DEPTH_CONFIDENCE: (
+                lambda i: self._resize(self.get_depth_confidence(sensor_id, i), image_size, nearest),
+                np.float32,
+            ),
+        }
+
+        out: Dict[Modality, np.ndarray] = {}
+        for m in requested:
+            spec = per_frame.get(m)
+            if spec is None:
+                continue
+            getter, dtype = spec
+            stacked = np.stack([np.asarray(getter(i)) for i in frame_ids], axis=0)
+            out[m] = stacked.astype(dtype) if dtype is not None else stacked
+
+        # TIMESTAMP: (N,) float64 vector.
+        if Modality.TIMESTAMP in requested:
+            out[Modality.TIMESTAMP] = np.asarray(
+                [self.get_timestamp(sensor_id, i) for i in frame_ids], dtype=np.float64
             )
 
-        cols: dict[Modality, list] = {m: [] for m in requested}
-        for f in frame_ids:
-            if Modality.RGB in requested:
-                rgb = _resize(self.get_rgb(sensor_id, f), Image.BILINEAR)
-                if image_dtype == "float32":
-                    rgb = rgb.astype(np.float32) / 255.0
-                cols[Modality.RGB].append(rgb)
-            if Modality.RGB_SEMANTIC_MASK in requested:
-                cols[Modality.RGB_SEMANTIC_MASK].append(
-                    _resize(self.get_rgb_semantic_mask(sensor_id, f), Image.NEAREST)
-                )
-            if Modality.RGB_DYNAMIC_MASK in requested:
-                cols[Modality.RGB_DYNAMIC_MASK].append(
-                    _resize(self.get_rgb_dynamic_mask(sensor_id, f), Image.NEAREST)
-                )
-            if Modality.RGB_VALID_MASK in requested:
-                cols[Modality.RGB_VALID_MASK].append(
-                    _resize(self.get_rgb_valid_mask(sensor_id, f), Image.NEAREST)
-                )
-            if Modality.DEPTH in requested:
-                cols[Modality.DEPTH].append(
-                    _resize(self.get_depth(sensor_id, f), Image.NEAREST)
-                )
-            if Modality.DEPTH_CONFIDENCE in requested:
-                cols[Modality.DEPTH_CONFIDENCE].append(
-                    _resize(self.get_depth_confidence(sensor_id, f), Image.NEAREST)
-                )
-            if Modality.POSE in requested:
-                cols[Modality.POSE].append(
-                    np.asarray(
-                        self.get_pose(sensor_id, f).transform_matrix, dtype=np.float32
-                    )
-                )
-            if Modality.TIMESTAMP in requested:
-                cols[Modality.TIMESTAMP].append(self.get_timestamp(sensor_id, f))
+        # POSE: (N, 4, 4) c2w, selected from the (cached) full-sequence poses.
+        if Modality.POSE in requested:
+            poses = np.asarray(self.get_poses(sensor_id), dtype=np.float32)
+            out[Modality.POSE] = poses[np.asarray(frame_ids, dtype=int)]
 
-        out: dict[Modality, np.ndarray] = {}
-        for m, vals in cols.items():
-            if m is Modality.TIMESTAMP:
-                out[m] = np.asarray(vals, dtype=np.float64)
-            else:
-                out[m] = np.stack(vals, axis=0)
+        # TRACK / TRACK_VISIBILITY: per-sequence products from get_tracks (tracks, vis).
+        if Modality.TRACK in requested or Modality.TRACK_VISIBILITY in requested:
+            tracks, visibility = self.get_tracks(sensor_id)
+            if Modality.TRACK in requested:
+                out[Modality.TRACK] = np.asarray(tracks)
+            if Modality.TRACK_VISIBILITY in requested:
+                out[Modality.TRACK_VISIBILITY] = np.asarray(visibility)
+
+        # POINTCLOUD: per-sequence (optionally per-frame) product.
+        if Modality.POINTCLOUD in requested:
+            out[Modality.POINTCLOUD] = self.get_pointcloud(sensor_id, frame_ids)
+
         return out
-        # ──────────────────────────────────────────────────────────────────────
