@@ -62,7 +62,6 @@ class BaseSequence(ABC):
         single generic ``SequenceDataset`` can stay vendor-agnostic).
         """
         import glob
-        import os
 
         names = set()
         for pat in patterns or ["*"]:
@@ -89,9 +88,10 @@ class BaseSequence(ABC):
         self._calib_tree = self.load_calibration_tree()
         self._sensor_poses = self.load_sensor_poses()
 
-    def get_sequence_directory(self, data_root: str, seq_id: str) -> str:
-        """Return sequence directory by data root path and sequence id."""
-        return os.path.join(data_root, seq_id)
+    def get_sequence_directory(self) -> str:
+        """Return sequence directory ``<data_root>/<seq_id>`` (called arg-free from
+        :meth:`__init__`; reads ``self._data_root`` / ``self._seq_id``)."""
+        return os.path.join(self._data_root, self._seq_id)
 
     @abstractmethod
     def load_manifest(self) -> Dict[Union[int, str], Dict[Modality, str]]:
@@ -116,8 +116,8 @@ class BaseSequence(ABC):
         frame_name: int,
     ):
         """Get frame file path."""
-        frame_namex = self.get_frame_index(frame_name)
-        return self._manifest[sensor_id][modality][frame_namex]
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        return self._manifest[sensor_id][modality][frame_index]
 
     # -- discovery (cheap metadata; never triggers a decode) ----------------- #
     def get_sensors(self) -> List[Union[int, str]]:
@@ -133,7 +133,13 @@ class BaseSequence(ABC):
         """Return number of frames of specific sensor."""
 
     def get_timestamp(self, sensor_id: Union[int, str], frame_name: int) -> float:
-        """Get timestamps by sensor_id and frame_name. If no frame timestamp, use sorted frame index instead."""
+        """Get timestamp by sensor_id and frame_name. Falls back to the sorted
+        frame index when the sensor carries no ``TIMESTAMP`` modality."""
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        timestamps = self._manifest[sensor_id].get(Modality.TIMESTAMP)
+        if not timestamps:
+            return float(frame_index)
+        return float(timestamps[frame_index])
 
     # -- per-frame getters: (sensor_id, frame_name) ---------------------------- #
     @abstractmethod
@@ -175,13 +181,18 @@ class BaseSequence(ABC):
         """Get per-pixel depth confidence, aligned to depth."""
 
     def get_pose(self, sensor_id: Union[int, str], frame_name: int) -> np.ndarray:
-        """Per-frame c2w SE(3) pose as a ``(4, 4)`` homogeneous matrix."""
-        return self._sensor_poses[sensor_id][frame_name]
+        """Per-frame c2w SE(3) pose as a ``(4, 4)`` homogeneous matrix.
+
+        ``_sensor_poses[sensor_id]`` is a :class:`BaseSE3Trajectory`; indexing it by
+        frame yields a length-1 trajectory, so take its ``(1, 4, 4)``
+        ``transform_matrix`` and drop the batch axis."""
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        return self._sensor_poses[sensor_id][frame_index].transform_matrix()[0]
 
     def get_poses(self, sensor_id: Union[int, str]) -> np.ndarray:
         """Frame c2w SE(3) poses for a sensor as ``(M, 4, 4)``, frame-sorted
         (precomputed in :meth:`load_sensor_poses`)."""
-        return self._sensor_poses[sensor_id]
+        return self._sensor_poses[sensor_id].transform_matrix()
 
     def get_extrinsic(
         self, src_sensor_id: Union[int, str], dst_sensor_id: Union[int, str]
@@ -285,13 +296,14 @@ class BaseSequence(ABC):
     ) -> dict[Modality, np.ndarray]:
         """Decode ONE sensor's frames into stacked, per-modality numpy arrays.
 
-        Concrete template: composes the per-frame getters (``get_rgb`` /
-        ``get_depth`` / ``get_rgb_semantic_mask`` / ``get_rgb_dynamic_mask`` /
-        ``get_rgb_valid_mask`` / ``get_depth_confidence`` / ``get_pose`` /
-        ``get_timestamp``), resizes to ``image_size``, casts images per
-        ``image_dtype`` and stacks each modality along axis 0 in ``frame_names``
-        order. Vendors implement only the getters + :meth:`get_modalities` +
-        :meth:`_frame_image_path`; they need not override ``parse``.
+        Concrete template: image-like modalities are decoded through the per-frame
+        getters (``get_rgb`` / ``get_depth`` / ``get_rgb_semantic_mask`` /
+        ``get_rgb_dynamic_mask`` / ``get_rgb_valid_mask`` / ``get_depth_confidence``),
+        resized to ``image_size`` and cast per ``image_dtype``; POSE and TIMESTAMP
+        are read from the precomputed ``_sensor_poses`` trajectory and the manifest.
+        Each modality is stacked along axis 0 in ``frame_names`` order. Vendors
+        implement only the getters + :meth:`get_modalities` + the ``load_*`` loaders;
+        they need not override ``parse``.
 
         INTRINSIC / EXTRINSIC are **not** parsed here: they are per-sequence
         *calibration* (the sensor camera matrix; the static inter-sensor
@@ -339,7 +351,12 @@ class BaseSequence(ABC):
                 f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}"
             )
 
-        assert set(modalities).issubset(self.get_modalities(sensor_id))
+        available = self.get_modalities(sensor_id)
+        modalities = set(available) if modalities is None else set(modalities)
+        assert modalities.issubset(available), (
+            f"sensor {sensor_id!r} does not provide modalities: "
+            f"{sorted(m.value for m in modalities - available)}"
+        )
 
         # Per-frame modalities decoded by looping frame_names (stacked along axis 0).
         # Each entry: (getter, PIL interp, output dtype, optional post-fn).
@@ -397,9 +414,8 @@ class BaseSequence(ABC):
         # TIMESTAMP: (N,) float64 vector.
         if Modality.TIMESTAMP in modalities:
             out[Modality.TIMESTAMP] = np.asarray(
-                self._manifest[sensor_id][Modality.TIMESTAMP][frame_idxes],
-                dtype=np.float64,
-            )
+                self._manifest[sensor_id][Modality.TIMESTAMP], dtype=np.float64
+            )[frame_idxes]
 
         # POSE: (N, 4, 4) c2w, selected from the full-sequence poses.
         if Modality.POSE in modalities:
