@@ -63,15 +63,15 @@ class BaseSE3Trajectory(ABC):
 
     @staticmethod
     def log(se3_group: Any) -> Any:
-        """Log mapping from SE(3) group to se(3) algebra."""
+        """Log mapping: SE(3) group [N, 4, 4] -> se(3) algebra [N, 6] (batched)."""
 
     @staticmethod
     def exp(se3_algebra: Any) -> Any:
-        """Exponential mapping from se(3) algebra to SE(3) group."""
+        """Exp mapping: se(3) algebra [N, 6] -> SE(3) group [N, 4, 4] (batched)."""
 
     @staticmethod
     def left_jacobian(se3_group: Any):
-        """Compute left jacobian J for SE(3) group."""
+        """Left jacobian J [N, 6, 6] for SE(3) group [N, 4, 4] / algebra [N, 6]."""
 
     @abstractmethod
     def transform_matrix(self) -> Any:
@@ -110,6 +110,10 @@ class BaseSE3Trajectory(ABC):
         """Compute SE(3) norm, i.e. norm of se(3) algebra."""
 
     @abstractmethod
+    def adjoint(self) -> Any:
+        """As SE(3) adjoint Ad_T, dimension = [N, 6, 6] (for (rho, phi) twist order)."""
+
+    @abstractmethod
     def apply(self, points: Any) -> Any:
         """Apply SE(3) transform to 3D points."""
 
@@ -133,6 +137,20 @@ class BaseSE3Trajectory(ABC):
     def inverse(self) -> "BaseSE3Trajectory":
         """Inverse the SE(3) trajectory."""
 
+    @abstractmethod
+    def boxplus(self, twist: Any) -> "BaseSE3Trajectory":
+        """Right-plus manifold update ``self ∘ exp(twist)``; twist dimension = [N, 6]."""
+
+    @abstractmethod
+    def boxminus(self, other: "BaseSE3Trajectory") -> Any:
+        """Right-minus: the [N, 6] twist with ``other.boxplus(result) == self``,
+        i.e. ``log(other^{-1} ∘ self)``."""
+
+    @abstractmethod
+    def consecutive_twist(self) -> Any:
+        """Per-step body twist between consecutive frames, dimension = [N-1, 6]:
+        ``log(P_i^{-1} P_{i+1})`` (the arc-length 'motion' measure)."""
+
     def fit(self) -> Any:
         """Fit SE(3) trajectory to a smooth spline. Future API."""
         raise NotImplementedError
@@ -150,7 +168,8 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
     Conventions: active transform ``x' = R @ x + t`` mapping ``source -> target``;
     the ``se(3)`` twist is ordered ``xi = (rho, phi)`` with the translation part
     ``rho`` first and the ``so(3)`` part ``phi`` second; ``se3_algebra`` /
-    ``rotation_vector`` angles are radians.
+    ``rotation_vector`` angles are radians. Every accessor keeps the batch axis
+    (``N``), so a single frame is ``[1, ...]``, never squeezed.
 
     Implements exactly the :class:`BaseSE3Trajectory` API (no extra members).
     """
@@ -241,6 +260,19 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
     def norm(self) -> np.ndarray:
         return np.linalg.norm(self.se3_algebra(), axis=1)
 
+    def adjoint(self) -> np.ndarray:
+        tf_mat = self.transform_matrix()
+        rot, trans = tf_mat[:, :3, :3], tf_mat[:, :3, 3]
+        skew_t = np.zeros((tf_mat.shape[0], 3, 3))
+        skew_t[:, 0, 1], skew_t[:, 0, 2] = -trans[:, 2], trans[:, 1]
+        skew_t[:, 1, 0], skew_t[:, 1, 2] = trans[:, 2], -trans[:, 0]
+        skew_t[:, 2, 0], skew_t[:, 2, 1] = -trans[:, 1], trans[:, 0]
+        ad = np.zeros((tf_mat.shape[0], 6, 6))
+        ad[:, :3, :3] = rot
+        ad[:, :3, 3:] = skew_t @ rot  # (rho, phi) ordering: rotation couples into rho
+        ad[:, 3:, 3:] = rot
+        return ad
+
     # ------------------------------------------------------------------ #
     # SE(3) group operations (element-wise over frames)
     # ------------------------------------------------------------------ #
@@ -268,10 +300,49 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
         satisfies ``other.compose(self.relative(other)) == self``."""
         if len(other) != len(self):
             raise ValueError(f"relative length mismatch: {len(self)} vs {len(other)}")
-        tf_mat = np.linalg.inv(other.transform_matrix()) @ self.transform_matrix()
+        ts_mat = self.transform_matrix()
+        to_mat = other.transform_matrix()
+        rot_o = to_mat[:, :3, :3]
+        # closed-form inv(other) @ self = (Ro^T Rs, Ro^T (ts - to)); avoids np.linalg.inv
+        tf_mat = np.broadcast_to(np.eye(4), ts_mat.shape).copy()
+        tf_mat[:, :3, :3] = np.einsum("nji,njk->nik", rot_o, ts_mat[:, :3, :3])
+        tf_mat[:, :3, 3] = np.einsum(
+            "nji,nj->ni", rot_o, ts_mat[:, :3, 3] - to_mat[:, :3, 3]
+        )
         quat = Rotation.from_matrix(tf_mat[:, :3, :3]).as_quat()
         poses = np.concatenate([quat, tf_mat[:, :3, 3]], axis=1)
         return type(self)(self._tstamps, poses, self._src, self._dst, normalize=False)
+
+    def boxplus(self, twist: Any) -> "NumpySE3Trajectory":
+        """Right-plus: ``self ∘ exp(twist)`` with ``twist`` a ``[N, 6]`` se(3) twist."""
+        tf_mat = self.transform_matrix() @ self.exp(twist)
+        quat = Rotation.from_matrix(tf_mat[:, :3, :3]).as_quat()
+        poses = np.concatenate([quat, tf_mat[:, :3, 3]], axis=1)
+        return type(self)(self._tstamps, poses, self._src, self._dst, normalize=False)
+
+    def boxminus(self, other: "BaseSE3Trajectory") -> np.ndarray:
+        """Right-minus ``log(other^{-1} ∘ self)`` -> ``[N, 6]``;
+        satisfies ``other.boxplus(self.boxminus(other)) == self``."""
+        ts_mat = self.transform_matrix()
+        to_mat = other.transform_matrix()
+        rot_o = to_mat[:, :3, :3]
+        # closed-form inv(other) @ self (avoids np.linalg.inv)
+        rel = np.broadcast_to(np.eye(4), ts_mat.shape).copy()
+        rel[:, :3, :3] = np.einsum("nji,njk->nik", rot_o, ts_mat[:, :3, :3])
+        rel[:, :3, 3] = np.einsum("nji,nj->ni", rot_o, ts_mat[:, :3, 3] - to_mat[:, :3, 3])
+        return self.log(rel)
+
+    def consecutive_twist(self) -> np.ndarray:
+        """Per-step body twist ``log(P_i^{-1} P_{i+1})`` -> ``[N-1, 6]``."""
+        tf_mat = self.transform_matrix()
+        rot_a = tf_mat[:-1, :3, :3]
+        # closed-form inv(P_i) @ P_{i+1} for each consecutive pair (avoids np.linalg.inv)
+        rel = np.broadcast_to(np.eye(4), (tf_mat.shape[0] - 1, 4, 4)).copy()
+        rel[:, :3, :3] = np.einsum("nji,njk->nik", rot_a, tf_mat[1:, :3, :3])
+        rel[:, :3, 3] = np.einsum(
+            "nji,nj->ni", rot_a, tf_mat[1:, :3, 3] - tf_mat[:-1, :3, 3]
+        )
+        return self.log(rel)
 
     def apply(self, points: Any) -> np.ndarray:
         """Transform 3D points by the trajectory.
@@ -307,7 +378,7 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
     def interpolate(self, timestamps: Any) -> "NumpySE3Trajectory":
         """Resample at ``timestamps`` along the SE(3) geodesic (constant-twist screw
         motion) between bracketing frames. Out-of-range queries raise (no
-        extrapolation)."""
+        extrapolation). Fully vectorised over the query times."""
         if self._tstamps is None:
             raise ValueError("trajectory has no timestamps; cannot interpolate")
         if len(self) < 2:
@@ -322,12 +393,11 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
         t0, t1 = t_src[idx], t_src[idx + 1]
         alpha = np.where(t1 > t0, (t_query - t0) / np.where(t1 > t0, t1 - t0, 1.0), 0.0)
         tf_mat = self.transform_matrix()
-        poses = np.empty((t_query.shape[0], 7))
-        for k, i in enumerate(idx):
-            twist = self.log(np.linalg.inv(tf_mat[i]) @ tf_mat[i + 1])  # (6,)
-            tf_k = tf_mat[i] @ self.exp(alpha[k] * twist)  # (4, 4)
-            poses[k, :4] = Rotation.from_matrix(tf_k[:3, :3]).as_quat()
-            poses[k, 4:] = tf_k[:3, 3]
+        rel = np.linalg.inv(tf_mat[idx]) @ tf_mat[idx + 1]  # (M, 4, 4)
+        delta = self.exp(alpha[:, None] * self.log(rel))  # (M, 4, 4)
+        out = tf_mat[idx] @ delta  # (M, 4, 4)
+        quat = Rotation.from_matrix(out[:, :3, :3]).as_quat()
+        poses = np.concatenate([quat, out[:, :3, 3]], axis=1)
         return type(self)(t_query, poses, self._src, self._dst, normalize=False)
 
     def align(self, other: "BaseSE3Trajectory") -> "NumpySE3Trajectory":
@@ -350,15 +420,16 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
         return type(self)(self._tstamps, poses, self._src, self._dst, normalize=False)
 
     # ------------------------------------------------------------------ #
-    # Lie-group utilities (batched; accept single or (N, ...) inputs)
+    # Lie-group utilities (batched; a single element keeps the batch axis -> [1, ...])
     # ------------------------------------------------------------------ #
     @staticmethod
     def log(se3_group: Any) -> np.ndarray:
-        """SE(3) log: ``(N, 4, 4)`` / ``(4, 4)`` group -> ``(N, 6)`` / ``(6,)`` twist
-        ``(rho, phi)`` (translation first)."""
+        """SE(3) log: ``[N, 4, 4]`` group -> ``[N, 6]`` twist ``(rho, phi)``
+        (translation first). A single ``[4, 4]`` is promoted to ``[1, 4, 4]``; the
+        batch axis is always kept (output ``[N, 6]``, never ``[6]``)."""
         tf = np.asarray(se3_group, dtype=np.float64)
-        single = tf.ndim == 2
-        tf = tf[None] if single else tf
+        if tf.ndim == 2:
+            tf = tf[None]
         phi = Rotation.from_matrix(tf[:, :3, :3]).as_rotvec()  # (N, 3)
         theta = np.linalg.norm(phi, axis=1)
         skew = np.zeros((phi.shape[0], 3, 3))
@@ -372,16 +443,16 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
         c[~small] = 1.0 / th**2 - (1.0 + np.cos(th)) / (2.0 * th * np.sin(th))
         v_inv = eye - 0.5 * skew + c[:, None, None] * (skew @ skew)
         rho = np.einsum("nij,nj->ni", v_inv, tf[:, :3, 3])
-        xi = np.concatenate([rho, phi], axis=1)
-        return xi[0] if single else xi
+        return np.concatenate([rho, phi], axis=1)
 
     @staticmethod
     def exp(se3_algebra: Any) -> np.ndarray:
-        """SE(3) exp: ``(N, 6)`` / ``(6,)`` twist ``(rho, phi)`` (translation first)
-        -> ``(N, 4, 4)`` / ``(4, 4)`` group."""
+        """SE(3) exp: ``[N, 6]`` twist ``(rho, phi)`` (translation first) -> ``[N, 4, 4]``
+        group. A single ``[6]`` is promoted to ``[1, 6]``; the batch axis is always
+        kept (output ``[N, 4, 4]``, never ``[4, 4]``)."""
         xi = np.asarray(se3_algebra, dtype=np.float64)
-        single = xi.ndim == 1
-        xi = xi[None] if single else xi
+        if xi.ndim == 1:
+            xi = xi[None]
         rho, phi = xi[:, :3], xi[:, 3:]
         theta = np.linalg.norm(phi, axis=1)
         skew = np.zeros((xi.shape[0], 3, 3))
@@ -399,21 +470,23 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
         tf = np.broadcast_to(np.eye(4), (xi.shape[0], 4, 4)).copy()
         tf[:, :3, :3] = Rotation.from_rotvec(phi).as_matrix()
         tf[:, :3, 3] = np.einsum("nij,nj->ni", v_mat, rho)
-        return tf[0] if single else tf
+        return tf
 
     @staticmethod
     def left_jacobian(se3_group: Any) -> np.ndarray:
         """SE(3) left Jacobian ``J_l`` for the ``(rho, phi)`` twist ordering.
 
-        Accepts a group element ``(..., 4, 4)`` (logged first) or a twist
-        ``(..., 6)``; returns ``(N, 6, 6)`` / ``(6, 6)``. Computed exactly via the
-        Van Loan integral ``J_l = ∫_0^1 exp(s·ad) ds`` (the top-right block of
-        ``expm([[ad, I], [0, 0]])``), valid for all twists with no small-angle case.
+        Accepts a group element ``[N, 4, 4]`` (logged first) or a twist ``[N, 6]``; a
+        single ``[4, 4]`` / ``[6]`` is promoted, so the output is always ``[N, 6, 6]``
+        (never ``[6, 6]``). Computed exactly via the Van Loan integral
+        ``J_l = ∫_0^1 exp(s·ad) ds`` (top-right block of ``expm([[ad, I], [0, 0]])``),
+        valid for all twists with no small-angle case.
         """
         arr = np.asarray(se3_group, dtype=np.float64)
-        xi = NumpySE3Trajectory.log(arr) if arr.shape[-2:] == (4, 4) else arr
-        single = xi.ndim == 1
-        xi = xi[None] if single else xi
+        if arr.shape[-2:] == (4, 4):
+            xi = NumpySE3Trajectory.log(arr)  # already batched [N, 6]
+        else:
+            xi = arr[None] if arr.ndim == 1 else arr
         jac = np.empty((xi.shape[0], 6, 6))
         for k in range(xi.shape[0]):
             rx, ry, rz = xi[k, :3]
@@ -427,4 +500,4 @@ class NumpySE3Trajectory(BaseSE3Trajectory):
             aug = np.zeros((12, 12))
             aug[:6, :6], aug[:6, 6:] = ad, np.eye(6)
             jac[k] = expm(aug)[:6, 6:]
-        return jac[0] if single else jac
+        return jac
