@@ -32,7 +32,7 @@ import numpy as np
 import networkx as nx
 from PIL import Image
 
-from vggt_omega.datasets.base_sequence import BaseSequence, Modality
+from vggt_omega.datasets.vendors.base_sequence import BaseSequence, Modality
 from vggt_omega.datasets.se3_pose import BaseSE3Pose, NumpySE3Pose
 from vggt_omega.datasets.vendors.common import associate
 
