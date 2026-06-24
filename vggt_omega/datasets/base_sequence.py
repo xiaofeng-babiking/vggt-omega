@@ -25,6 +25,7 @@ class Modality(str, Enum):
     FLOW = "flow"  # flow map
     POSE = "pose"  # frame pose
     TIMESTAMP = "timestamp"
+    INDEX = "index"  # frame index or id
     TRACK = "track"  # pixel correspondence of each track within each frame
     TRACK_VISIBILITY = "track_visibility"  # visibility of each track within each frame
     # Per-Sequence Data
@@ -40,8 +41,9 @@ class BaseSequence(ABC):
     addressed by ``(sensor_id, frame_id)``. Construction reads only the manifest
     (file indices / metadata) and touches no pixels, so a sampler can query the
     discovery + pose accessors to pick frames without forcing a decode.
-    ``sensor_id`` / ``frame_id`` are ``int`` indices or native ``str`` keys; the
-    pixel getters decode lazily on access.
+    ``sensor_id`` is an ``int`` index or native ``str`` key; ``frame_id`` is an
+    ``int`` index into the sensor's frame-sorted timeline; the pixel getters
+    decode lazily on access.
     """
 
     # -- discovery (which sequence ids live under a data root) --------------- #
@@ -81,7 +83,7 @@ class BaseSequence(ABC):
         self._data_root = data_root
         self._seq_id = seq_id
         self._cache_dir = cache_dir
-        self._seq_dir = self.get_sequence_path()
+        self._seq_dir = self.get_sequence_directory()
         self._manifest = self.load_manifest()
         self._calib_tree = self.load_calibration_tree()
         self._sensor_poses = self.load_sensor_poses()
@@ -100,7 +102,11 @@ class BaseSequence(ABC):
 
     @abstractmethod
     def load_sensor_poses(self) -> Dict[Union[int, str], np.ndarray]:
-        """ "Load frame poses for each sensor."""
+        """Load frame poses for each sensor. Pose format: [qx, qy, qz, qw, tx, ty, tz]."""
+
+    @abstractmethod
+    def load_sensor_timestamps(self) -> Dict[Union[int, str], np.ndarray]:
+        """Load frame timestamps for each sensor."""
 
     def get_frame_file(
         self,
@@ -125,19 +131,14 @@ class BaseSequence(ABC):
         """Return number of frames of specific sensor."""
 
     @abstractmethod
-    def get_timestamp(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> float:
+    def get_timestamp(self, sensor_id: Union[int, str], frame_id: int) -> float:
         """Get timestamps by sensor_id and frame_id. If no frame timestamp, use sorted frame index instead."""
 
     # -- per-frame getters: (sensor_id, frame_id) ---------------------------- #
     @abstractmethod
-    def get_rgb(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> np.ndarray:
+    def get_rgb(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
         """Get RGB image by sensor_id and frame_id."""
 
-    @abstractmethod
     def get_rgb_size(self, sensor_id: Union[int, str]) -> Tuple[int, int]:
         """Get RGB imagesize."""
         rgb_file = self._manifest[sensor_id][Modality.RGB][0]
@@ -146,39 +147,40 @@ class BaseSequence(ABC):
 
     @abstractmethod
     def get_rgb_semantic_mask(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+        self, sensor_id: Union[int, str], frame_id: int
     ) -> np.ndarray:
         """Get per-pixel semantic-label mask, pixel-aligned to RGB."""
 
     @abstractmethod
     def get_rgb_dynamic_mask(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+        self, sensor_id: Union[int, str], frame_id: int
     ) -> np.ndarray:
         """Get moving-object mask (True = dynamic), pixel-aligned to RGB."""
 
     @abstractmethod
     def get_rgb_valid_mask(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+        self, sensor_id: Union[int, str], frame_id: int
     ) -> Optional[np.ndarray]:
         """Get valid mask (True = valid) to remove e.g. SKY pixels, pixel-aligned to RGB."""
 
     @abstractmethod
-    def get_depth(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> np.ndarray:
+    def get_depth(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
         """Get depth map by sensor_id and frame_id. RGB and depth should be calibrated i.e. pixel aligned."""
 
     @abstractmethod
     def get_depth_confidence(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
+        self, sensor_id: Union[int, str], frame_id: int
     ) -> np.ndarray:
         """Get per-pixel depth confidence, aligned to depth."""
 
-    def get_pose(
-        self, sensor_id: Union[int, str], frame_id: Union[int, str]
-    ) -> np.ndarray:
+    def get_pose(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
         """Per-frame c2w SE(3) pose as a ``(4, 4)`` homogeneous matrix."""
         return self._sensor_poses[sensor_id][frame_id]
+
+    def get_poses(self, sensor_id: Union[int, str]) -> np.ndarray:
+        """Frame c2w SE(3) poses for a sensor as ``(M, 4, 4)``, frame-sorted
+        (precomputed in :meth:`load_sensor_poses`)."""
+        return self._sensor_poses[sensor_id]
 
     def get_extrinsic(
         self, src_sensor_id: Union[int, str], dst_sensor_id: Union[int, str]
@@ -276,7 +278,7 @@ class BaseSequence(ABC):
     def parse(
         self,
         sensor_id: Union[int, str],
-        frame_ids: List[Union[int, str]],
+        frame_ids: List[int],
         modalities: Optional[set[Modality]] = None,
         image_size: Optional[tuple[int, int]] = None,
         image_dtype: Literal["uint8", "float32"] = "uint8",
@@ -405,9 +407,9 @@ class BaseSequence(ABC):
                 [self.get_timestamp(sensor_id, i) for i in frame_ids], dtype=np.float64
             )
 
-        # POSE: (N, 4, 4) c2w, selected from the (cached) full-sequence poses.
+        # POSE: (N, 4, 4) c2w, selected from the full-sequence poses.
         if Modality.POSE in requested:
-            poses = np.asarray(self.get_poses(sensor_id), dtype=np.float32)
+            poses = np.asarray(self._sensor_poses[sensor_id], dtype=np.float32)
             out[Modality.POSE] = poses[np.asarray(frame_ids, dtype=int)]
 
         # TRACK / TRACK_VISIBILITY: per-sequence products from get_tracks (tracks, vis).
