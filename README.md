@@ -184,7 +184,7 @@ still come from the configure's `inference` block) — but it is started with
 ```bash
 # Single node, 8 GPUs
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
-  --configure vggt_omega/datasets/config/tum.yaml \
+  --configure vggt_omega/datasets/configures/tum.yaml \
   --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
   --output_root outputs \
   --cp_strategy all_gather_kv
@@ -195,7 +195,7 @@ torchrun --standalone --nproc_per_node=8 distributed_inference.py \
 torchrun --nnodes=2 --nproc_per_node=8 \
   --rdzv_backend=c10d --rdzv_endpoint=$HEAD_NODE_IP:29500 \
   distributed_inference.py \
-  --configure vggt_omega/datasets/config/tum.yaml \
+  --configure vggt_omega/datasets/configures/tum.yaml \
   --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
   --cp_strategy ring
 ```
@@ -258,7 +258,7 @@ warmup pass), logs the rank-0 operator table, and writes one Chrome trace per ra
 
 ```bash
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
-  --configure vggt_omega/datasets/config/tum.yaml \
+  --configure vggt_omega/datasets/configures/tum.yaml \
   --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
   --cp_strategy all_gather_kv \
   --profile
@@ -303,10 +303,41 @@ system timeline, wrap the launch in
 ```bash
 nsys profile -o cp_infer --trace=cuda,nvtx,osrt \
 torchrun --standalone --nproc_per_node=8 distributed_inference.py \
---configure vggt_omega/datasets/config/tum.yaml \
+--configure vggt_omega/datasets/configures/tum.yaml \
 --checkpoint /jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt \
 --cp_strategy all_gather_kv
-```.
+```
+
+**Worked example — `world_size` 1 → 8.** The same 1000-frame `walking_halfsphere`
+sequence at 512×384 (`image_scale: 0.8`, `all_gather_kv`, 8× A100-80GB PCIe),
+profiled forward only, run through `distributed_inference.py` at `--nproc_per_node`
+1 then 8:
+
+| profiled forward | `world_size=1` | `world_size=8` (per rank) |
+| :--- | :--- | :--- |
+| Frames / GPU | 1000 | 125 |
+| Forward time | 342 s | **46 s** (7.4×) |
+| Peak GPU mem | 70.4 GB | 21.9 GB (3.2×) |
+| `flash_attention` (Self CUDA) | 320 s (93%) | 37 s (80%, 8.6×) |
+| `nccl:all_gather` (Self CUDA) | — | 6.4 s (14%) |
+
+Attention shards ~8.6× (320 → 37 s); the gap from an ideal 8× wall-clock speedup
+is exactly the new `nccl:all_gather` row — the K/V exchange, serialized with
+compute under `all_gather_kv` (a modest 14% here; the first cost to grow on a
+slower interconnect or across nodes, where `ring` wins). Peak memory falls only
+3.2× — not 8× — because every rank still materializes the full-sequence K/V (the
+`all_gather_kv` trade-off; `ring` is `O(N/world)`). Metrics are unchanged
+(ATE 0.0101 → 0.0102 m, Abs Rel 0.0479 for both), confirming the shard stays
+numerically faithful to the single-GPU forward.
+
+**Data loading is invisible to `--profile` — and not the bottleneck.** The profiler
+brackets only the model forward, so dataset I/O never enters the op table; it
+surfaces only in the surrounding logs (`loaded N frames in X s`). For this run the
+whole dataset pipeline is ~21 s — **1.6 s** to build/enumerate (instantiate, RGB-D
+timestamp sync, native-size probe) plus **~20 s** to read + resize + tensorize 1000
+frames on the threaded loader — about 1.6% of the 1335 s single-GPU wall time and
+~6% of one forward. Frame loading shards with the frames (≈ 2 s/rank at
+`world_size=8`), so it stays hidden behind compute as you scale.
 
 ## Training
 

@@ -28,3 +28,6 @@ opencode.json
 docs/
 
 .dataset_surveys/
+
+# Local diagnostic/probe scripts (not for commit)
+scripts/probe_dataset_overhead.py
