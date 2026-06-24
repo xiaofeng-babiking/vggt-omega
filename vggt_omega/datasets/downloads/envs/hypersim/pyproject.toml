@@ -1,0 +1,11 @@
+[project]
+name = "dl-hypersim"
+version = "0"
+description = "uv env for the apple/ml-hypersim image downloader (dataset_download_images.py)."
+requires-python = ">=3.10"
+dependencies = [
+    # ml-hypersim download/decompress tools use pandas + requests; vlz extras optional.
+    "pandas",
+    "requests",
+    "tqdm",
+]

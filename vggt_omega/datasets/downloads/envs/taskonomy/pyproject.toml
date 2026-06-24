@@ -1,0 +1,8 @@
+[project]
+name = "dl-taskonomy"
+version = "0"
+description = "uv env for downloading Taskonomy via the Omnidata tool (omnitools.download). Also needs aria2 on PATH (system package)."
+requires-python = ">=3.10"
+dependencies = [
+    "omnidata-tools",
+]

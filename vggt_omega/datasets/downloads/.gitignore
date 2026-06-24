@@ -1,0 +1,17 @@
+# uv creates a .venv per dataset env; never commit these.
+envs/*/.venv/
+# Cloned upstream downloader repos (created at runtime by the scripts).
+**/_*_repo/
+**/_co3d_repo/
+**/_uco3d_repo/
+**/_ml-hypersim/
+**/_dl3dv_repo/
+**/_dynamic_stereo/
+**/_wildrgbd_repo/
+**/_projectaria_tools/
+**/_efm3d_repo/
+**/_hot3d_repo/
+**/_midair_repo/
+**/_dl3dv_repo/
+**/BEHAVIOR-1K/
+# Keep uv.lock files committed for reproducibility (do NOT ignore them).

@@ -1,0 +1,12 @@
+[project]
+name = "dl-uco3d"
+version = "0"
+description = "uv env for downloading uCO3D. The cloned facebookresearch/uco3d repo is installed editable into this env at runtime (uv_pip install -e), which pulls its own deps."
+requires-python = ">=3.10"
+dependencies = [
+    # Base deps the repo's download_dataset.py needs before the editable install;
+    # the editable install of the cloned repo adds the rest.
+    "requests",
+    "tqdm",
+    "huggingface_hub",
+]
