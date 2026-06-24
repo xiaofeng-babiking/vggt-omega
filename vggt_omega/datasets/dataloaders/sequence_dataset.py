@@ -173,7 +173,18 @@ class SequenceDataset(Dataset):
         # the [start, end] window (was: eager load of ALL n poses per sample, one
         # disk read per frame of the whole sequence on per-frame-file vendors).
         indices, _ = sample_se3_trajectory(seq, sensor, num=num, start=start, end=end)
-        return np.asarray(indices, dtype=int)
+        ids = [int(i) for i in indices]
+        # sample_se3_trajectory de-duplicates equal-arc-length targets that snap to
+        # the same frame across a low-motion stretch, so it can return < num ids.
+        # But train_collate stacks each batch assuming every sample has exactly `num`
+        # frames (DynamicBatchSampler draws one count per batch); a short sample
+        # breaks the stack. The [start, end] window spans >= num frames, so top up to
+        # exactly `num` from its still-unused frames (kept distinct and ordered).
+        if len(ids) < num:
+            chosen = set(ids)
+            extra = [i for i in range(start, end + 1) if i not in chosen]
+            ids = sorted(chosen.union(extra[: num - len(chosen)]))
+        return np.asarray(ids, dtype=int)
 
     # ------------------------------------------------------------------ #
     # the batch dict

@@ -426,19 +426,32 @@ class TestTumSequence(BaseSequenceContract):
             TumSequence(root, seq_id)
 
     # ----- construction-time guards / robustness --------------------------- #
-    def test_rgb_depth_sync_mismatch_raises(self):
-        # depth offset (0.05 s) exceeds the default rgbd_sync_diff (5 ms).
+    def test_rgb_depth_sync_drops_unsynced_frames(self):
+        # Real TUM rgb/depth run on different clocks at different frame counts, so
+        # load_manifest pairs each color frame with its NEAREST depth and *drops*
+        # any color frame with no depth within rgbd_sync_diff (it does not raise --
+        # the zip+assert variant crashed on real data; see commit 25e2c54). Here the
+        # 0.05 s depth offset (>> 5 ms) leaves the first color frame unmatched.
         root = tempfile.mkdtemp()
         _write_tum_sequence(root, self.SEQ_ID, n=3, depth_offset=0.05)
-        with pytest.raises(AssertionError):
-            TumSequence(root, self.SEQ_ID)
+        seq = TumSequence(root, self.SEQ_ID)
+        sensor = seq.get_sensors()[0]
+        # unsynced frame(s) dropped (< n), synced ones survive (> 0): no crash.
+        assert 0 < seq.get_length(sensor) < 3
 
-    def test_groundtruth_must_span_color_frames(self):
-        # groundtruth starts after the first color frame -> interpolate can't extrapolate.
+    def test_groundtruth_out_of_span_color_frames_dropped(self):
+        # groundtruth starts 0.10 s after the first color frame, so the early color
+        # frames fall outside the GT time span. load_manifest drops them (rather than
+        # raising) so the pose interpolation in load_sensor_poses never extrapolates;
+        # the in-span frames are kept and each gets an interpolated pose.
         root = tempfile.mkdtemp()
         _write_tum_sequence(root, self.SEQ_ID, n=4, gt_lo_pad=-0.10)
-        with pytest.raises(ValueError):
-            TumSequence(root, self.SEQ_ID)
+        seq = TumSequence(root, self.SEQ_ID)
+        sensor = seq.get_sensors()[0]
+        kept = seq.get_length(sensor)
+        assert 0 < kept < 4  # pre-span frames dropped, in-span frames kept
+        # every kept frame has an interpolated c2w pose (poses align 1:1 with frames).
+        assert len(seq.get_poses(sensor)) == kept
 
     def test_unsorted_groundtruth_is_handled(self):
         # groundtruth written in descending time must still interpolate correctly.
