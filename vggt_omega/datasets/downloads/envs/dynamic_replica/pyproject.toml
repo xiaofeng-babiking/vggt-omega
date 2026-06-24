@@ -1,0 +1,9 @@
+[project]
+name = "dl-dynamic-replica"
+version = "0"
+description = "uv env for downloading Dynamic Replica via dynamic_stereo/scripts/download_dynamic_replica.py."
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "tqdm",
+]

@@ -1,0 +1,11 @@
+[project]
+name = "dl-aria"
+version = "0"
+description = "uv env for downloading Aria Synthetic Environments (ASE) / Project Aria."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # Official Aria toolkit; ships the ASE downloader + VRS decoders.
+    "projectaria-tools[all]",
+    "requests",
+    "tqdm",
+]

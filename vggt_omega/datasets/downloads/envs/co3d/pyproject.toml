@@ -1,0 +1,10 @@
+[project]
+name = "dl-co3d"
+version = "0"
+description = "uv env for downloading CO3Dv2 via facebookresearch/co3d's download_dataset.py."
+requires-python = ">=3.10"
+dependencies = [
+    # co3d/download_dataset.py uses requests + tqdm for the chunked CDN download.
+    "requests",
+    "tqdm",
+]

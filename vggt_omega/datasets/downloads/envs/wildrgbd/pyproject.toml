@@ -1,0 +1,10 @@
+[project]
+name = "dl-wildrgbd"
+version = "0"
+description = "uv env for downloading WildRGB-D via the repo's download.py (HuggingFace-hosted zips)."
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "tqdm",
+    "huggingface_hub",
+]

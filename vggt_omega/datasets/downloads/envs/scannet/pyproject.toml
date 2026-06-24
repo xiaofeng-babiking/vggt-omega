@@ -1,0 +1,9 @@
+[project]
+name = "dl-scannet"
+version = "0"
+description = "uv env for the ScanNet / ScanNet++ download scripts (download-scannet.py)."
+requires-python = ">=3.10"
+dependencies = [
+    # download-scannet.py is stdlib-only (urllib) but newer copies use requests.
+    "requests",
+]

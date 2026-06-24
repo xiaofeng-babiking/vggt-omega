@@ -1,0 +1,9 @@
+[project]
+name = "dl-midair"
+version = "0"
+description = "uv env for the Mid-Air download_dataset.py helper (checkbox-generated config)."
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "tqdm",
+]

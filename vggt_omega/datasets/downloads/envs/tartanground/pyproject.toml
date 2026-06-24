@@ -1,0 +1,8 @@
+[project]
+name = "dl-tartanground"
+version = "0"
+description = "uv env for downloading TartanGround via the official 'tartanair' package (download_ground)."
+requires-python = ">=3.10"
+dependencies = [
+    "tartanair",
+]
