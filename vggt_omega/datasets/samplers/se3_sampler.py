@@ -20,7 +20,7 @@ from typing import List, Tuple, Union
 
 import numpy as np
 
-from vggt_omega.datasets.base_sequence import BaseSequence
+from vggt_omega.datasets.sequences.base_sequence import BaseSequence
 
 
 def sample_se3_trajectory(
@@ -32,20 +32,23 @@ def sample_se3_trajectory(
 ) -> Tuple[List[int], List[float]]:
     """Sample frame indices spaced ~uniformly in SE(3) arc-length.
 
-    Per-frame gap is the SE(3) twist norm ``dₖ = ‖log(Pₖ₋₁⁻¹ Pₖ)‖`` (== the norm
-    of ``seq.get_pose(sensor, k).boxminus(seq.get_pose(sensor, k-1))``). The
-    cumulative sum of these gaps over the ``[start, end]`` window is the arc-length;
-    ``num`` targets are placed at equal arc-length and each is snapped to the nearest
-    frame (by cumulative arc-length), so dense-motion regions receive more samples
-    than static ones.
+    Per-frame gap is the SE(3) twist norm ``dₖ = ‖log(Pₖ₋₁⁻¹ Pₖ)‖``. The cumulative
+    sum of these gaps over the ``[start, end]`` window is the arc-length; ``num``
+    targets are placed at equal arc-length and each is snapped to the nearest frame
+    (by cumulative arc-length), so dense-motion regions receive more samples than
+    static ones.
+
+    Poses come from ``seq.get_poses(sensor)`` — the precomputed per-sensor SE(3)
+    trajectory (a :class:`~vggt_omega.datasets.utils.se3_trajectory.BaseSE3Trajectory`).
+    The window ``[start, end]`` is sliced out and its consecutive body-twists are
+    taken in one batched call (:meth:`consecutive_twist`); frames outside the window
+    never affect the result.
 
     Args:
-        seq: the :class:`BaseSequence` to sample from. Poses are read on demand via
-            ``seq.get_pose(sensor, k)`` for ONLY the frames in ``[start, end]`` (the
-            window endpoints and every interior frame); frames outside the window are
-            never read -- so a per-frame-file vendor does at most ``window`` disk
-            reads, not one per frame of the whole sequence.
-        sensor: the sensor id passed to ``seq.get_pose`` / ``seq.get_length``.
+        seq: the :class:`BaseSequence` to sample from. ``seq.get_poses(sensor)`` must
+            return an SE(3) trajectory positionally aligned with ``get_length`` (frame
+            ``k`` is the ``k``-th element); the sampler operates on positional indices.
+        sensor: the sensor id passed to ``seq.get_poses`` / ``seq.get_length``.
         num: number of equal-arc-length targets to place (``>= 1``). The returned
             list may be **shorter** than ``num`` because duplicate snapped indices
             are removed (e.g. when several targets fall on the same frame across a
@@ -70,6 +73,13 @@ def sample_se3_trajectory(
         ValueError: if ``num < 1``, the window is invalid, or the window is too
             small — requires ``end - start + 1 >= num``.
     """
+
+    def _to_numpy(x) -> np.ndarray:
+        """Backend-agnostic twist array -> NumPy float64 (NumPy or torch input)."""
+        if hasattr(x, "detach"):  # torch.Tensor
+            return x.detach().cpu().numpy().astype(np.float64)
+        return np.asarray(x, dtype=np.float64)
+
     n_poses = seq.get_length(sensor)
     if n_poses == 0:
         raise ValueError("seq is empty")
@@ -92,18 +102,14 @@ def sample_se3_trajectory(
     if num == 1 or start == end:
         return [start], [0.0]
 
-    # Per-frame SE(3) motion gap over the window: gap[j] is the twist norm from
-    # window-frame j-1 to j; cum[j] is the arc-length from `start` to frame start+j.
-    # Only poses in [start, end] are read here (window-local), so a per-frame-file
-    # vendor never loads frames outside the window.
-    cum = np.zeros(window, dtype=np.float64)
-    prev = seq.get_pose(sensor, start)
-    for j in range(1, window):
-        cur = seq.get_pose(sensor, start + j)
-        twist = cur.boxminus(prev)  # log(P_{k-1}⁻¹ P_k)
-        gap = float(np.linalg.norm(_to_numpy(twist)))
-        cum[j] = cum[j - 1] + gap
-        prev = cur
+    # Per-frame SE(3) motion gaps over the window. ``consecutive_twist`` on the
+    # sliced trajectory returns ``log(P_i⁻¹ P_{i+1})`` for each consecutive pair
+    # (shape ``(window - 1, 6)``); cum[j] is the arc-length from `start` to frame
+    # start+j. Only the window slice is touched, so frames outside it never
+    # contribute.
+    window_twists = seq.get_poses(sensor)[start : end + 1].consecutive_twist()
+    gaps = np.linalg.norm(_to_numpy(window_twists), axis=1)  # (window - 1,)
+    cum = np.concatenate([[0.0], np.cumsum(gaps)])  # (window,)
     total = float(cum[-1])
 
     if total <= 0.0:
@@ -132,11 +138,3 @@ def sample_se3_trajectory(
     for k in range(1, len(indices)):
         distances.append(float(cum[indices[k] - start] - cum[indices[k - 1] - start]))
     return indices, distances
-
-
-
-def _to_numpy(x) -> np.ndarray:
-    """Backend-agnostic ``(6,)`` twist -> NumPy float64 (NumPy or torch input)."""
-    if hasattr(x, "detach"):  # torch.Tensor
-        return x.detach().cpu().numpy().astype(np.float64)
-    return np.asarray(x, dtype=np.float64)
