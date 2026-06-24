@@ -9,17 +9,20 @@ sequence directory is::
     <seq>/rgb/*.png         # 8-bit color
     <seq>/depth/*.png       # 16-bit depth, metres = pixel / 5000
 
-RGB, depth and groundtruth run on three different clocks, so a frame is built by
-greedy nearest-timestamp association (``vendors.common.associate``) keyed on the
-color timestamps. Intrinsics are per-camera constants (freiburg1 / 2 / 3).
+RGB, depth and groundtruth run on three different clocks. RGB and depth are paired
+by frame index (assumed pre-synchronized; the per-pair timestamp gap is asserted
+to stay within ``rgbd_sync_diff``), and the groundtruth trajectory is interpolated
+along the SE(3) geodesic onto the color timestamps
+(``utils.se3_trajectory.NumpySE3Trajectory``) — which must therefore temporally
+span them. Intrinsics are per-camera constants (freiburg1 / 2 / 3).
 
 This class is a :class:`BaseSequence`: it models **one** sequence with **one**
 sensor (``sensor_id == "RGBD"``, the RGB-D camera). Construction reads only the
 text indices (no pixels); the ``get_rgb`` / ``get_depth`` getters decode lazily.
-Per-frame camera-to-world poses are **stored** as a ``(M, 4, 4)`` homogeneous
-matrix stack (``_sensor_poses``) and **returned** as :class:`NumpySE3Pose` value
-objects from :meth:`get_pose` / :meth:`get_poses` (so the SE(3) sampler can take
-``boxminus`` / ``inverse`` on them).
+Per-frame camera-to-world poses are **stored** as a per-sensor
+:class:`NumpySE3Trajectory` (``_sensor_poses``) and **returned** as
+:class:`NumpySE3Pose` value objects from :meth:`get_pose` / :meth:`get_poses` (so
+the SE(3) sampler can take ``boxminus`` / ``inverse`` on them).
 """
 
 from __future__ import annotations
@@ -32,17 +35,18 @@ import numpy as np
 import networkx as nx
 from PIL import Image
 
-from vggt_omega.datasets.vendors.base_sequence import BaseSequence, Modality
+from vggt_omega.datasets.sequences.base_sequence import BaseSequence, Modality
 from vggt_omega.datasets.se3_pose import BaseSE3Pose, NumpySE3Pose
-from vggt_omega.datasets.vendors.common import associate
+from vggt_omega.datasets.utils.se3_trajectory import NumpySE3Trajectory
 
 
 class TumSequence(BaseSequence):
     """One TUM RGB-D sequence as a :class:`BaseSequence`.
 
-    Single sensor (``_SENSOR == "RGBD"``). Frames are RGB / depth pairs
-    associated to a groundtruth pose by nearest timestamp; ``frame_id`` is the
-    integer index into that associated, timestamp-sorted list.
+    Single sensor (``_SENSOR == "RGBD"``). Frames are RGB / depth pairs (nearest
+    depth within ``rgbd_sync_diff``) carrying a groundtruth pose interpolated onto
+    the color timestamp; ``frame_id`` is the integer index into that
+    timestamp-sorted list.
     """
 
     _SENSOR = "RGBD"
@@ -61,7 +65,6 @@ class TumSequence(BaseSequence):
         seq_id: str,
         cache_dir: Optional[str] = None,
         rgbd_sync_diff: float = 5e-3,
-        pose_sync_diff: float = 0.02,
         depth_scale: float = 5000.0,
     ):
         """Open a TUM sequence directory.
@@ -72,13 +75,10 @@ class TumSequence(BaseSequence):
                 ``"rgbd_dataset_freiburg1_xyz"``).
             cache_dir: cache directory
             rgbd_sync_diff: max timestamp gap (s) for rgb and depth synchronization.
-            pose_sync_diff: max timestamp gap (s) for associating a groundtruth
-                pose to a color frame.
             depth_scale: TUM depth PNG scale (metres = pixel / depth_scale).
         """
-        self.rgbd_sync_diff = float(rgbd_sync_diff)
-        self.pose_sync_diff = float(pose_sync_diff)
-        self.depth_scale = float(depth_scale)
+        self._rgbd_sync_diff = float(rgbd_sync_diff)
+        self._depth_scale = float(depth_scale)
         super().__init__(data_root, seq_id, cache_dir)
 
     def get_sequence_directory(self) -> str:
@@ -114,30 +114,20 @@ class TumSequence(BaseSequence):
         return poses
 
     def load_manifest(self) -> Dict[Union[int, str], Dict[Modality, list]]:
-        """Parse the rgb/depth indices and associate them by nearest timestamp.
-
-        Keyed on the color clock: each frame is a ``(rgb, depth)`` pair matched by
-        greedy nearest-timestamp association within :attr:`rgbd_sync_diff`. The
-        frame-sorted color timestamp is the frame's reference timestamp.
-        """
+        """Parse the rgb/depth/groundtruth indices into the per-frame manifest."""
         rgb_items = self._read_tum_rgbd_txt(os.path.join(self._seq_dir, "rgb.txt"))
         depth_items = self._read_tum_rgbd_txt(os.path.join(self._seq_dir, "depth.txt"))
 
-        rgb_by_ts = {t: f for t, f in rgb_items}
-        depth_by_ts = {t: f for t, f in depth_items}
-
-        # greedy nearest-timestamp rgb<->depth association (returns sorted pairs)
-        matches = associate(
-            list(rgb_by_ts), list(depth_by_ts), max_diff=self.rgbd_sync_diff
-        )
-
         manifest = {TumSequence._SENSOR: defaultdict(list)}
-        for i, (rgb_t, depth_t) in enumerate(matches):
-            manifest[TumSequence._SENSOR][Modality.INDEX].append(i)
+        sensor = manifest[TumSequence._SENSOR]
+        for (rgb_t, rgb_file), (depth_t, depth_file) in zip(rgb_items, depth_items):
+            assert abs(rgb_t - depth_t) <= self._rgbd_sync_diff
+
+            sensor[Modality.NAME].append(len(sensor[Modality.NAME]))
             # use RGB as the RGBD sensor's reference timestamp (sync error < rgbd_sync_diff)
-            manifest[TumSequence._SENSOR][Modality.TIMESTAMP].append(rgb_t)
-            manifest[TumSequence._SENSOR][Modality.RGB].append(rgb_by_ts[rgb_t])
-            manifest[TumSequence._SENSOR][Modality.DEPTH].append(depth_by_ts[depth_t])
+            sensor[Modality.TIMESTAMP].append(rgb_t)
+            sensor[Modality.RGB].append(rgb_file)
+            sensor[Modality.DEPTH].append(depth_file)
         return manifest
 
     def load_calibration_tree(self) -> nx.DiGraph:
@@ -145,9 +135,9 @@ class TumSequence(BaseSequence):
 
         A TUM capture is one moving RGB-D camera, so there are no inter-sensor
         extrinsics: the tree is a lone node (``_SENSOR``) whose ``"intrinsic"``
-        attribute is the ``(3, 3)`` pinhole matrix ``K`` for this Freiburg camera
-        (the base :meth:`get_intrinsic` / :meth:`scaled_intrinsic` read it from
-        there). The camera variant (freiburg1/2/3) is inferred from ``seq_id``.
+        attribute is the ``[fx, fy, cx, cy]`` pinhole intrinsic for this Freiburg
+        camera (the base :meth:`get_intrinsic` / :meth:`scaled_intrinsic` read it
+        from there). The camera variant (freiburg1/2/3) is inferred from ``seq_id``.
         """
         cam = next((k for k in self._TUM_INTRINSICS if k in self._seq_id), None)
         if cam is None:
@@ -156,50 +146,36 @@ class TumSequence(BaseSequence):
                 f"expected the id to contain one of {sorted(self._TUM_INTRINSICS)}"
             )
         fx, fy, cx, cy = self._TUM_INTRINSICS[cam]
-        intrinsic = np.array(
-            [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32
-        )
+        # The base get_intrinsic / scaled_intrinsic operate on a 4-vector
+        # [fx, fy, cx, cy], so store the node intrinsic in that form.
+        intrinsic = np.array([fx, fy, cx, cy], dtype=np.float32)
 
         tree = nx.DiGraph()
         tree.add_node(TumSequence._SENSOR, intrinsic=intrinsic)
         return tree
 
-    def load_sensor_poses(self) -> Dict[Union[int, str], np.ndarray]:
-        """Per-frame camera-to-world poses as a ``(M, 4, 4)`` homogeneous stack.
+    def load_sensor_poses(self) -> Dict[Union[int, str], NumpySE3Trajectory]:
+        """Load sensor poses."""
+        gt_poses = self._read_tum_pose_txt(
+            os.path.join(self._seq_dir, "groundtruth.txt")
+        )
+        # interpolate() assumes an ascending time axis (searchsorted + endpoint
+        # range check), so sort the groundtruth rows by timestamp first.
+        gt_poses = gt_poses[np.argsort(gt_poses[:, 0])]
 
-        ``groundtruth.txt`` is the camera-to-world trajectory on its own (mocap)
-        clock, so each frame's color timestamp is matched to the nearest
-        groundtruth sample (within :attr:`pose_sync_diff`). Quaternion + translation
-        rows are converted to a ``(4, 4)`` matrix through :class:`NumpySE3Pose`
-        (the SE(3) value type the rest of the repo standardizes on).
-        """
-        gt = self._read_tum_pose_txt(os.path.join(self._seq_dir, "groundtruth.txt"))
-        frame_ts = self._manifest[TumSequence._SENSOR][Modality.TIMESTAMP]
+        gt_traj = NumpySE3Trajectory(
+            timestamps=gt_poses[:, 0],
+            poses=gt_poses[:, 1:],
+            source=TumSequence._SENSOR,
+            target="world",
+            normalize=True,
+        )
 
-        poses = np.empty((len(frame_ts), 4, 4), dtype=np.float64)
-        if gt.size == 0:
-            # No groundtruth on disk: fall back to identity so the sequence is
-            # still usable for the pose-free modalities (rgb / depth).
-            poses[:] = np.eye(4, dtype=np.float64)
-            return {TumSequence._SENSOR: poses}
+        rgb_ts = self._manifest[TumSequence._SENSOR][Modality.TIMESTAMP]
+        rgb_traj = gt_traj.interpolate(rgb_ts)
 
-        gt_ts = gt[:, 0]
-        for i, t in enumerate(frame_ts):
-            j = int(np.argmin(np.abs(gt_ts - t)))
-            quat_xyzw, trans = gt[j, 1:5], gt[j, 5:8]
-            poses[i] = NumpySE3Pose.from_quat(
-                quat_xyzw, trans, scalar_last=True
-            ).transform_matrix
-        return {TumSequence._SENSOR: poses}
-
-    def load_sensor_timestamps(self) -> Dict[Union[int, str], np.ndarray]:
-        """Per-frame reference (color) timestamps as a ``(M,)`` float64 vector."""
-        return {
-            TumSequence._SENSOR: np.asarray(
-                self._manifest[TumSequence._SENSOR][Modality.TIMESTAMP],
-                dtype=np.float64,
-            )
-        }
+        sensor_poses = {TumSequence._SENSOR: rgb_traj}
+        return sensor_poses
 
     # -- discovery ----------------------------------------------------------- #
     def get_sensors(self) -> List[Union[int, str]]:
@@ -218,7 +194,7 @@ class TumSequence(BaseSequence):
         return set()
 
     def get_length(self, sensor_id: Union[int, str]) -> int:
-        return len(self._manifest[sensor_id][Modality.INDEX])
+        return len(self._manifest[sensor_id][Modality.NAME])
 
     def get_timestamp(self, sensor_id: Union[int, str], frame_id: int = 0) -> float:
         return float(self._manifest[sensor_id][Modality.TIMESTAMP][frame_id])
@@ -257,7 +233,7 @@ class TumSequence(BaseSequence):
         depth_file = self._manifest[sensor_id][Modality.DEPTH][frame_id]
         with Image.open(depth_file) as im:
             arr = np.asarray(im).astype(np.float32)
-        depth = arr / self.depth_scale
+        depth = arr / self._depth_scale
         depth[~np.isfinite(depth)] = 0.0
         return depth
 
@@ -266,12 +242,12 @@ class TumSequence(BaseSequence):
     ) -> np.ndarray:
         raise NotImplementedError("TUM RGB-D provides no depth confidence")
 
-    def get_pose(self, sensor_id: Union[int, str], frame_id: int) -> BaseSE3Pose:
+    def get_pose(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
         """Per-frame camera-to-world SE(3) pose (TUM groundtruth convention).
 
         Wraps the stored ``(4, 4)`` c2w matrix into a :class:`NumpySE3Pose` value
         object (the form the SE(3) sampler / dataset adapter consume)."""
-        tf_c2w = self._sensor_poses[sensor_id][int(frame_id)]
+        tf_c2w = self._sensor_poses[sensor_id][int(frame_id)].transform_matrix()[0]
         return NumpySE3Pose.from_tf_mat(tf_c2w)
 
     def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
