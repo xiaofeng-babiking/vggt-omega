@@ -15,9 +15,13 @@ from torch.utils.data import Dataset
 from torch.utils.data import ConcatDataset
 import bisect
 from .dataset_util import *
-from .track_util import *
 from .augmentation import get_image_augmentation
 from .parallel_loader import parallel_get_data
+
+try:  # optional: on-the-fly track synthesis (only used when load_track=True)
+    from .track_util import build_tracks_by_depth
+except ImportError:
+    build_tracks_by_depth = None
 
 
 # Optional per-frame modality keys a vendor's get_data may attach beyond the core
@@ -231,6 +235,12 @@ class ComposedDataset(Dataset, ABC):
             else:
                 # Generate tracks on-the-fly using depth information
                 # This creates synthetic tracks based on the 3D information available
+                if build_tracks_by_depth is None:
+                    raise RuntimeError(
+                        "load_track=True needs on-the-fly track synthesis, but "
+                        "track_util.build_tracks_by_depth is unavailable. Provide "
+                        "precomputed 'tracks' in the batch or disable load_track."
+                    )
                 tracks, track_vis_mask, track_positive_mask = build_tracks_by_depth(
                     extrinsics, intrinsics, world_points, depths, point_masks, images,
                     target_track_num=self.track_num, neg_ratio=self.track_neg_ratio,

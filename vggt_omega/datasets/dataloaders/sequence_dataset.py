@@ -32,9 +32,9 @@ import numpy as np
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
-from vggt_omega.datasets.base_sequence import BaseSequence, Modality
-from vggt_omega.datasets.dataset_util import *  # noqa: F401,F403  (crop/resize/rotate helpers)
-from vggt_omega.datasets.dataset_util import depth_to_world_coords_points
+from vggt_omega.datasets.sequences.base_sequence import BaseSequence, Modality
+from .dataset_util import *  # noqa: F401,F403  (crop/resize/rotate helpers)
+from .dataset_util import depth_to_world_coords_points
 from vggt_omega.datasets.samplers.se3_sampler import sample_se3_trajectory
 
 Image.MAX_IMAGE_PIXELS = None
@@ -150,7 +150,7 @@ class SequenceDataset(Dataset):
 
     def native_image_size(self, local_idx: int = 0):
         seq = self._sequence(self.sequence_list[local_idx])
-        return seq.read_image_size(seq._frame_image_path(self._sensor(seq), 0))
+        return seq.get_rgb_size(self._sensor(seq))
 
     # ------------------------------------------------------------------ #
     # frame sampling
@@ -208,7 +208,11 @@ class SequenceDataset(Dataset):
         target_image_shape = self.get_target_shape(aspect_ratio)
         mods = seq.get_modalities(sensor)
         has_depth = Modality.DEPTH in mods
-        K_native = seq.get_intrinsic(sensor) if Modality.INTRINSIC in mods else None
+        K_native = (
+            self._intrinsic_to_matrix(seq.get_intrinsic(sensor))
+            if Modality.INTRINSIC in mods
+            else None
+        )
 
         images, depths, extrinsics, intrinsics = [], [], [], []
         cam_points, world_points, point_masks = [], [], []
@@ -226,8 +230,12 @@ class SequenceDataset(Dataset):
                 depth_map = np.zeros(image.shape[:2], dtype=np.float32)
 
             # camera-to-world pose -> w2c OpenCV [R|t] extrinsic (the boundary).
+            # get_pose returns a single-frame SE3Trajectory; transform_matrix() is
+            # (1, 4, 4), so take [0][:3] for the (3, 4) w2c row block.
             if Modality.POSE in mods:
-                pose_w2c = seq.get_pose(sensor, i).inverse().transform_matrix[:3].astype(np.float32)
+                pose_w2c = (
+                    seq.get_pose(sensor, i).inverse().transform_matrix()[0][:3].astype(np.float32)
+                )
             else:
                 pose_w2c = np.hstack([np.eye(3), np.zeros((3, 1))]).astype(np.float32)
 
@@ -288,6 +296,18 @@ class SequenceDataset(Dataset):
             Modality.TIMESTAMP: "timestamps",
         }
         return {mapping[m] for m in seq_mods if m in mapping}
+
+    @staticmethod
+    def _intrinsic_to_matrix(intr) -> np.ndarray:
+        """A BaseSequence intrinsic -> ``(3, 3)`` OpenCV ``K``.
+
+        Accepts the current ``[fx, fy, cx, cy]`` 4-vector convention (built into a
+        pinhole matrix) or an already-``(3, 3)`` matrix (passed through)."""
+        K = np.asarray(intr, dtype=np.float32)
+        if K.shape == (3, 3):
+            return K.copy()
+        fx, fy, cx, cy = (float(v) for v in K.reshape(-1)[:4])
+        return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
 
     @staticmethod
     def _placeholder_K(hw) -> np.ndarray:

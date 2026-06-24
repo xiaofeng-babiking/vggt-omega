@@ -78,6 +78,9 @@ class TumSequence(BaseSequence):
         """
         self._rgbd_sync_diff = float(rgbd_sync_diff)
         self._depth_scale = float(depth_scale)
+        # Reference groundtruth trajectory, parsed once in load_manifest and reused
+        # by load_sensor_poses to interpolate poses onto the color timestamps.
+        self._gt_traj: Optional[NumpySE3Trajectory] = None
         super().__init__(data_root, seq_id, cache_dir)
 
     def get_sequence_directory(self) -> str:
@@ -113,20 +116,49 @@ class TumSequence(BaseSequence):
         return poses
 
     def load_manifest(self) -> Dict[Union[int, str], Dict[Modality, list]]:
-        """Parse the rgb/depth/groundtruth indices into the per-frame manifest."""
+        """Parse the rgb/depth/groundtruth indices into the per-frame manifest.
+
+        TUM's color and depth are two separate Kinect streams logged on different
+        clocks with differing frame counts, so each color frame is paired with its
+        **nearest** depth frame within :attr:`_rgbd_sync_diff` (unmatched color
+        frames are dropped). The groundtruth runs on yet another (mocap) clock; its
+        sorted trajectory is cached on ``self._gt_traj`` and its time span gates the
+        kept color frames, so the pose interpolation in :meth:`load_sensor_poses`
+        never has to extrapolate. ``frame_name`` (``Modality.NAME``) is the index
+        into the kept, timestamp-sorted list.
+        """
         rgb_items = self._read_tum_rgbd_txt(os.path.join(self._seq_dir, "rgb.txt"))
         depth_items = self._read_tum_rgbd_txt(os.path.join(self._seq_dir, "depth.txt"))
 
+        # Reference groundtruth: sort by time (interpolate() needs an ascending
+        # axis) and build the trajectory once; cache it for load_sensor_poses.
+        gt_poses = self._read_tum_pose_txt(os.path.join(self._seq_dir, "groundtruth.txt"))
+        gt_poses = gt_poses[np.argsort(gt_poses[:, 0])]
+        self._gt_traj = NumpySE3Trajectory(
+            timestamps=gt_poses[:, 0],
+            poses=gt_poses[:, 1:],
+            source=TumSequence._SENSOR,
+            target="world",
+            normalize=True,
+        )
+        gt_lo, gt_hi = float(gt_poses[0, 0]), float(gt_poses[-1, 0])
+
+        depth_ts = np.array([t for t, _ in depth_items], dtype=np.float64)
+        depth_paths = [p for _, p in depth_items]
+
         manifest = {TumSequence._SENSOR: defaultdict(list)}
         sensor = manifest[TumSequence._SENSOR]
-        for (rgb_t, rgb_file), (depth_t, depth_file) in zip(rgb_items, depth_items):
-            assert abs(rgb_t - depth_t) <= self._rgbd_sync_diff
-
+        for rgb_t, rgb_file in rgb_items:  # rgb_items is timestamp-sorted
+            if depth_ts.size == 0 or rgb_t < gt_lo or rgb_t > gt_hi:
+                continue  # outside the groundtruth span -> can't interpolate a pose
+            j = int(np.abs(depth_ts - rgb_t).argmin())
+            if abs(depth_ts[j] - rgb_t) > self._rgbd_sync_diff:
+                continue  # no depth frame close enough on the color clock
             sensor[Modality.NAME].append(len(sensor[Modality.NAME]))
             # use RGB as the RGBD sensor's reference timestamp (sync error < rgbd_sync_diff)
             sensor[Modality.TIMESTAMP].append(rgb_t)
             sensor[Modality.RGB].append(rgb_file)
-            sensor[Modality.DEPTH].append(depth_file)
+            sensor[Modality.DEPTH].append(depth_paths[j])
         return manifest
 
     def load_calibration_tree(self) -> nx.DiGraph:
@@ -154,27 +186,16 @@ class TumSequence(BaseSequence):
         return tree
 
     def load_sensor_poses(self) -> Dict[Union[int, str], NumpySE3Trajectory]:
-        """Load sensor poses."""
-        gt_poses = self._read_tum_pose_txt(
-            os.path.join(self._seq_dir, "groundtruth.txt")
-        )
-        # interpolate() assumes an ascending time axis (searchsorted + endpoint
-        # range check), so sort the groundtruth rows by timestamp first.
-        gt_poses = gt_poses[np.argsort(gt_poses[:, 0])]
+        """Per-frame camera-to-world poses, interpolated onto the color timestamps.
 
-        gt_traj = NumpySE3Trajectory(
-            timestamps=gt_poses[:, 0],
-            poses=gt_poses[:, 1:],
-            source=TumSequence._SENSOR,
-            target="world",
-            normalize=True,
-        )
-
+        Resamples the cached reference groundtruth trajectory (``self._gt_traj``,
+        built in :meth:`load_manifest`) onto the kept color timestamps along the
+        SE(3) geodesic. ``load_manifest`` already dropped frames outside the
+        groundtruth span, so this never extrapolates.
+        """
         rgb_ts = self._manifest[TumSequence._SENSOR][Modality.TIMESTAMP]
-        rgb_traj = gt_traj.interpolate(rgb_ts)
-
-        sensor_poses = {TumSequence._SENSOR: rgb_traj}
-        return sensor_poses
+        rgb_traj = self._gt_traj.interpolate(rgb_ts)
+        return {TumSequence._SENSOR: rgb_traj}
 
     # -- discovery ----------------------------------------------------------- #
     def get_sensors(self) -> List[Union[int, str]]:

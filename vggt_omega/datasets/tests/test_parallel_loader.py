@@ -12,7 +12,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from vggt_omega.datasets.parallel_loader import (
+from vggt_omega.datasets.dataloaders.parallel_loader import (
     merge_chunk_batches,
     parallel_get_data,
     resolve_num_workers,
@@ -181,7 +181,7 @@ class FakeVendor(Dataset):
 
 def _composed(common=None, **vendor_kwargs):
     cfg = {
-        "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
+        "_target_": "vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset",
         "dataset_configs": [
             {
                 "_target_": "vggt_omega.datasets.tests.test_parallel_loader.FakeVendor",
@@ -380,7 +380,7 @@ def test_cv2_thread_cap_set_during_fanout_and_restored():
 def test_cv2_guard_nests_and_restores_outermost_value():
     import cv2
 
-    from vggt_omega.datasets.parallel_loader import _cv2_single_threaded
+    from vggt_omega.datasets.dataloaders.parallel_loader import _cv2_single_threaded
 
     original = cv2.getNumThreads()
     cv2.setNumThreads(8)
@@ -396,7 +396,7 @@ def test_cv2_guard_nests_and_restores_outermost_value():
 
 
 def test_resolve_num_workers(monkeypatch):
-    import vggt_omega.datasets.parallel_loader as pl
+    import vggt_omega.datasets.dataloaders.parallel_loader as pl
 
     assert resolve_num_workers(4) == 4
     assert resolve_num_workers(0) == 1  # the --loader_workers "0 = serial" contract
@@ -449,18 +449,18 @@ def test_tensorize_accepts_prestacked_arrays():
 @pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
 def test_tum_get_sample_parallel_equals_serial():
     cfg = {
-        "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
+        "_target_": "vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset",
         "dataset_configs": [
             {
-                "_target_": "vggt_omega.datasets.sequence_dataset.SequenceDataset",
+                "_target_": "vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset",
                 "sequence_cls": {
                     "_target_": "hydra.utils.get_class",
-                    "path": "vggt_omega.datasets.vendors.tum.TumSequence",
+                    "path": "vggt_omega.datasets.sequences.tum.TumSequence",
                 },
                 "split": "train",
                 "data_root": TUM_DIR,
                 "sequences": ["rgbd_dataset_freiburg3_sitting_halfsphere"],
-                "sequence_kwargs": {"assoc_max_diff": 0.02, "depth_scale": 5000.0},
+                "sequence_kwargs": {"rgbd_sync_diff": 0.02, "depth_scale": 5000.0},
             }
         ],
     }
