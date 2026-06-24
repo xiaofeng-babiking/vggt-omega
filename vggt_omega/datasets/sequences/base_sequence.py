@@ -364,51 +364,53 @@ class BaseSequence(ABC):
         frame_idxes = [self.get_frame_index(sensor_id, name) for name in frame_names]
         nearest, bilinear = Image.NEAREST, Image.BILINEAR
 
-        def _get_rgb_wrapper(i):
-            img = self._resize(self.get_rgb(sensor_id, i), image_size, bilinear)
+        def _get_rgb_wrapper(name):
+            img = self._resize(self.get_rgb(sensor_id, name), image_size, bilinear)
             return img.astype(np.float32) / 255.0 if image_dtype == "float32" else img
 
         per_frame = {
             Modality.RGB: (_get_rgb_wrapper, None),
             Modality.RGB_SEMANTIC_MASK: (
-                lambda i: self._resize(
-                    self.get_rgb_semantic_mask(sensor_id, i), image_size, nearest
+                lambda name: self._resize(
+                    self.get_rgb_semantic_mask(sensor_id, name), image_size, nearest
                 ),
                 np.int32,
             ),
             Modality.RGB_DYNAMIC_MASK: (
-                lambda i: self._resize(
-                    self.get_rgb_dynamic_mask(sensor_id, i), image_size, nearest
+                lambda name: self._resize(
+                    self.get_rgb_dynamic_mask(sensor_id, name), image_size, nearest
                 ),
                 bool,
             ),
             Modality.RGB_VALID_MASK: (
-                lambda i: self._resize(
-                    self.get_rgb_valid_mask(sensor_id, i), image_size, nearest
+                lambda name: self._resize(
+                    self.get_rgb_valid_mask(sensor_id, name), image_size, nearest
                 ),
                 bool,
             ),
             Modality.DEPTH: (
-                lambda i: self._resize(
-                    self.get_depth(sensor_id, i), image_size, nearest
+                lambda name: self._resize(
+                    self.get_depth(sensor_id, name), image_size, nearest
                 ),
                 np.float32,
             ),
             Modality.DEPTH_CONFIDENCE: (
-                lambda i: self._resize(
-                    self.get_depth_confidence(sensor_id, i), image_size, nearest
+                lambda name: self._resize(
+                    self.get_depth_confidence(sensor_id, name), image_size, nearest
                 ),
                 np.float32,
             ),
         }
 
+        # The decode getters are name-addressed (they resolve frame_name -> index
+        # themselves); only the bulk array ops below index by the resolved frame_idxes.
         out: Dict[Modality, np.ndarray] = {}
         for mod in modalities:
             spec = per_frame.get(mod)
             if spec is None:
                 continue
             getter, dtype = spec
-            stacked = np.stack([np.asarray(getter(i)) for i in frame_idxes], axis=0)
+            stacked = np.stack([np.asarray(getter(name)) for name in frame_names], axis=0)
             out[mod] = stacked.astype(dtype) if dtype is not None else stacked
 
         # TIMESTAMP: (N,) float64 vector.

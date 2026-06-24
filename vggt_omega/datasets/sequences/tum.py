@@ -20,9 +20,9 @@ This class is a :class:`BaseSequence`: it models **one** sequence with **one**
 sensor (``sensor_id == "RGBD"``, the RGB-D camera). Construction reads only the
 text indices (no pixels); the ``get_rgb`` / ``get_depth`` getters decode lazily.
 Per-frame camera-to-world poses are **stored** as a per-sensor
-:class:`NumpySE3Trajectory` (``_sensor_poses``) and **returned** as
-:class:`NumpySE3Pose` value objects from :meth:`get_pose` / :meth:`get_poses` (so
-the SE(3) sampler can take ``boxminus`` / ``inverse`` on them).
+:class:`NumpySE3Trajectory` (``_sensor_poses``); :meth:`get_pose` returns a
+single-frame slice of it and :meth:`get_poses` returns the whole trajectory, so
+the SE(3) sampler can take ``boxminus`` / ``inverse`` on them directly.
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ import networkx as nx
 from PIL import Image
 
 from vggt_omega.datasets.sequences.base_sequence import BaseSequence, Modality
-from vggt_omega.datasets.se3_pose import BaseSE3Pose, NumpySE3Pose
 from vggt_omega.datasets.utils.se3_trajectory import NumpySE3Trajectory
 
 
@@ -45,8 +44,8 @@ class TumSequence(BaseSequence):
 
     Single sensor (``_SENSOR == "RGBD"``). Frames are RGB / depth pairs (nearest
     depth within ``rgbd_sync_diff``) carrying a groundtruth pose interpolated onto
-    the color timestamp; ``frame_id`` is the integer index into that
-    timestamp-sorted list.
+    the color timestamp; ``frame_name`` (``Modality.NAME``) is the integer id into
+    that timestamp-sorted list.
     """
 
     _SENSOR = "RGBD"
@@ -196,41 +195,41 @@ class TumSequence(BaseSequence):
     def get_length(self, sensor_id: Union[int, str]) -> int:
         return len(self._manifest[sensor_id][Modality.NAME])
 
-    def get_timestamp(self, sensor_id: Union[int, str], frame_id: int = 0) -> float:
-        return float(self._manifest[sensor_id][Modality.TIMESTAMP][frame_id])
-
     # -- per-frame getters --------------------------------------------------- #
-    def get_rgb(
-        self,
-        sensor_id: Union[int, str],
-        frame_id: int,
-    ) -> np.ndarray:
+    # Per-frame data is addressed by ``frame_name`` (the stable Modality.NAME id).
+    # Mirroring the BaseSequence accessors, each getter resolves the name to a
+    # positional index via ``get_frame_index`` before indexing the manifest / pose
+    # trajectory. (``get_timestamp`` is inherited from BaseSequence, which already
+    # follows this same strategy.)
+    def get_rgb(self, sensor_id: Union[int, str], frame_name: int) -> np.ndarray:
         """Decode the color frame -> ``(H, W, 3)`` uint8 RGB."""
-        rgb_file = self._manifest[sensor_id][Modality.RGB][frame_id]
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        rgb_file = self._manifest[sensor_id][Modality.RGB][frame_index]
         with Image.open(rgb_file) as im:
             return np.asarray(im.convert("RGB"), dtype=np.uint8)
 
     def get_rgb_semantic_mask(
-        self, sensor_id: Union[int, str], frame_id: int
+        self, sensor_id: Union[int, str], frame_name: int
     ) -> np.ndarray:
         raise NotImplementedError("TUM RGB-D provides no semantic masks")
 
     def get_rgb_dynamic_mask(
-        self, sensor_id: Union[int, str], frame_id: int
+        self, sensor_id: Union[int, str], frame_name: int
     ) -> np.ndarray:
         raise NotImplementedError("TUM RGB-D provides no dynamic masks")
 
     def get_rgb_valid_mask(
-        self, sensor_id: Union[int, str], frame_id: int
+        self, sensor_id: Union[int, str], frame_name: int
     ) -> np.ndarray:
         raise NotImplementedError("TUM RGB-D provides no valid masks")
 
-    def get_depth(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
+    def get_depth(self, sensor_id: Union[int, str], frame_name: int) -> np.ndarray:
         """Decode the 16-bit depth PNG -> ``(H, W)`` float32 metres (0 = invalid).
 
         TUM stores plain uint16 integer counts; metres = value / ``depth_scale``.
         """
-        depth_file = self._manifest[sensor_id][Modality.DEPTH][frame_id]
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        depth_file = self._manifest[sensor_id][Modality.DEPTH][frame_index]
         with Image.open(depth_file) as im:
             arr = np.asarray(im).astype(np.float32)
         depth = arr / self._depth_scale
@@ -238,29 +237,32 @@ class TumSequence(BaseSequence):
         return depth
 
     def get_depth_confidence(
-        self, sensor_id: Union[int, str], frame_id: int
+        self, sensor_id: Union[int, str], frame_name: int
     ) -> np.ndarray:
         raise NotImplementedError("TUM RGB-D provides no depth confidence")
 
-    def get_pose(self, sensor_id: Union[int, str], frame_id: int) -> np.ndarray:
-        """Per-frame camera-to-world SE(3) pose (TUM groundtruth convention).
+    def get_pose(
+        self, sensor_id: Union[int, str], frame_name: int
+    ) -> NumpySE3Trajectory:
+        """Per-frame camera-to-world pose as a **single-frame**
+        :class:`NumpySE3Trajectory` (TUM groundtruth convention).
 
-        Wraps the stored ``(4, 4)`` c2w matrix into a :class:`NumpySE3Pose` value
-        object (the form the SE(3) sampler / dataset adapter consume)."""
-        tf_c2w = self._sensor_poses[sensor_id][int(frame_id)].transform_matrix()[0]
-        return NumpySE3Pose.from_tf_mat(tf_c2w)
+        Returning a trajectory slice (rather than a pose value object) lets the
+        SE(3) sampler take ``boxminus`` / ``inverse`` / ``transform_matrix`` on it
+        directly."""
+        frame_index = self.get_frame_index(sensor_id, frame_name)
+        return self._sensor_poses[sensor_id][frame_index]
 
-    def get_poses(self, sensor_id: Union[int, str]) -> List[BaseSE3Pose]:
-        """All frame-sorted camera-to-world poses as :class:`NumpySE3Pose` objects."""
-        return [self.get_pose(sensor_id, i) for i in range(self.get_length(sensor_id))]
+    def get_poses(self, sensor_id: Union[int, str]) -> NumpySE3Trajectory:
+        """All frame-sorted camera-to-world poses as one per-sensor
+        :class:`NumpySE3Trajectory`."""
+        return self._sensor_poses[sensor_id]
 
     # -- per-sensor / per-sequence products ---------------------------------- #
     def get_tracks(self, sensor_id: Union[int, str]) -> Tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError("TUM RGB-D provides no 2D/3D tracks")
 
-    def get_pointcloud(
-        self, sensor_id: Union[int, str], frame_ids: Optional[List[int]] = None
-    ) -> np.ndarray:
+    def get_pointcloud(self, sensor_id: Union[int, str]) -> np.ndarray:
         # TUM has no independent point-cloud GT (only depth re-projected through the
         # GT poses), so none is advertised here.
         raise NotImplementedError("TUM RGB-D provides no ground-truth point cloud")
