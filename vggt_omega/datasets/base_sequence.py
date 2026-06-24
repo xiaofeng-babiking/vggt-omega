@@ -84,6 +84,7 @@ class BaseSequence(ABC):
         self._seq_dir = self.get_sequence_path()
         self._manifest = self.load_manifest()
         self._calib_tree = self.load_calibration_tree()
+        self._sensor_poses = self.load_sensor_poses()
 
     def get_sequence_directory(self, data_root: str, seq_id: str) -> str:
         """Return sequence directory by data root path and sequence id."""
@@ -96,6 +97,10 @@ class BaseSequence(ABC):
     @abstractmethod
     def load_calibration_tree(self) -> nx.DiGraph:
         """Load extrinsics calibration tree, i.e. relative pose between sensors."""
+
+    @abstractmethod
+    def load_sensor_poses(self) -> Dict[Union[int, str], np.ndarray]:
+        """ "Load frame poses for each sensor."""
 
     def get_frame_file(
         self,
@@ -169,18 +174,11 @@ class BaseSequence(ABC):
     ) -> np.ndarray:
         """Get per-pixel depth confidence, aligned to depth."""
 
-    @abstractmethod
-    def get_poses(
-        self, sensor_id: Union[int, str], cache_dir: Optional[str] = None
-    ) -> np.ndarray:
-        """All frame poses for a sensor as a ``(N, 4, 4)`` array of c2w SE(3)
-        homogeneous matrices, frame-sorted."""
-
-    @abstractmethod
     def get_pose(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
     ) -> np.ndarray:
         """Per-frame c2w SE(3) pose as a ``(4, 4)`` homogeneous matrix."""
+        return self._sensor_poses[sensor_id][frame_id]
 
     def get_extrinsic(
         self, src_sensor_id: Union[int, str], dst_sensor_id: Union[int, str]
@@ -209,10 +207,14 @@ class BaseSequence(ABC):
         result = np.eye(4, dtype=np.float64)
         for u, v in zip(path[:-1], path[1:]):
             if self._calib_tree.has_edge(u, v):
-                step = np.asarray(self._calib_tree.edges[u, v]["extrinsic"], dtype=np.float64)
+                step = np.asarray(
+                    self._calib_tree.edges[u, v]["extrinsic"], dtype=np.float64
+                )
             else:
                 step = np.linalg.inv(
-                    np.asarray(self._calib_tree.edges[v, u]["extrinsic"], dtype=np.float64)
+                    np.asarray(
+                        self._calib_tree.edges[v, u]["extrinsic"], dtype=np.float64
+                    )
                 )
             # Accumulate dst<-src: apply earlier hops first, then this one.
             result = step @ result
