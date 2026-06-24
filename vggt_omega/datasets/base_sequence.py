@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Union, List, Optional, Tuple, Dict, Literal
+from typing import Union, List, Optional, Tuple, Dict, Literal
 
 import os
 import imagesize
 import numpy as np
 import networkx as nx
 from PIL import Image
-
-if TYPE_CHECKING:
-    from .se3_pose import BaseSE3Pose
 
 
 class Modality(str, Enum):
@@ -176,26 +173,58 @@ class BaseSequence(ABC):
     def get_poses(
         self, sensor_id: Union[int, str], cache_dir: Optional[str] = None
     ) -> np.ndarray:
-        """Get all frame poses for a specific sensor."""
+        """All frame poses for a sensor as a ``(N, 4, 4)`` array of c2w SE(3)
+        homogeneous matrices, frame-sorted."""
 
     @abstractmethod
     def get_pose(
         self, sensor_id: Union[int, str], frame_id: Union[int, str]
     ) -> np.ndarray:
-        """Get per-frame SE3 pose."""
+        """Per-frame c2w SE(3) pose as a ``(4, 4)`` homogeneous matrix."""
 
-    @abstractmethod
     def get_extrinsic(
         self, src_sensor_id: Union[int, str], dst_sensor_id: Union[int, str]
-    ) -> BaseSE3Pose:
-        """Get extrinsic i.e. static SE3 transform from source to target sensor id."""
+    ) -> np.ndarray:
+        """Static ``(4, 4)`` SE(3) transform from ``src_sensor_id`` frame to
+        ``dst_sensor_id`` frame, composed along the calibration tree.
+
+        ``self._calib_tree`` is an ``nx.DiGraph`` whose edges carry an
+        ``"extrinsic"`` attribute (a ``(4, 4)`` homogeneous matrix): a directed edge
+        ``u -> v`` stores the transform that maps points from frame ``u`` into frame
+        ``v``. We take the shortest path ``src -> ... -> dst`` over the *undirected*
+        view (so a stored ``u -> v`` edge can be traversed backwards as its inverse)
+        and compose the per-edge matrices in order.
+
+        ``src == dst`` returns identity. Raises ``networkx.NetworkXNoPath`` (or
+        ``NodeNotFound``) if the two sensors are not connected in the tree.
+        """
+        if src_sensor_id == dst_sensor_id:
+            return np.eye(4, dtype=np.float64)
+
+        # Shortest hop path over the undirected view; each hop is a stored edge in
+        # one direction or the inverse of the reverse edge.
+        path = nx.shortest_path(
+            self._calib_tree.to_undirected(as_view=True), src_sensor_id, dst_sensor_id
+        )
+        result = np.eye(4, dtype=np.float64)
+        for u, v in zip(path[:-1], path[1:]):
+            if self._calib_tree.has_edge(u, v):
+                step = np.asarray(self._calib_tree.edges[u, v]["extrinsic"], dtype=np.float64)
+            else:
+                step = np.linalg.inv(
+                    np.asarray(self._calib_tree.edges[v, u]["extrinsic"], dtype=np.float64)
+                )
+            # Accumulate dst<-src: apply earlier hops first, then this one.
+            result = step @ result
+        return result
 
     def get_intrinsic(
         self,
         sensor_id: Union[int, str],
     ) -> np.ndarray:
-        """Get intrinsic, e.g. camera matrix."""
-        return self._calib_tree.nodes[sensor_id].intrinsic
+        """Get intrinsic camera matrix ``(3, 3)`` for ``sensor_id`` from the
+        calibration tree node attribute ``"intrinsic"``."""
+        return self._calib_tree.nodes[sensor_id]["intrinsic"]
 
     def scaled_intrinsic(
         self,
@@ -279,7 +308,7 @@ class BaseSequence(ABC):
             RGB_VALID_MASK     bool [N, H, W]      True = valid (e.g. non-sky)
             DEPTH              f32  [N, H, W]      metres · <=0 = invalid
             DEPTH_CONFIDENCE   f32  [N, H, W]
-            POSE               f32  [N, 4, 4]      c2w (= get_pose(...).transform_matrix)
+            POSE               f32  [N, 4, 4]      c2w (= get_pose(...))
             TIMESTAMP          f64  [N]            seconds
             FLOW               f32  [N, H, W, 2]   flow between consecutive frames
             TRACK              i32  [N, T, 2]      tracks
@@ -303,7 +332,9 @@ class BaseSequence(ABC):
         image_dtype : ``"uint8"`` (transfer-light) or ``"float32"`` ([0,1]).
         """
         if image_dtype not in ("uint8", "float32"):
-            raise ValueError(f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}")
+            raise ValueError(
+                f"image_dtype must be 'uint8' or 'float32', got {image_dtype!r}"
+            )
 
         available = self.get_modalities(sensor_id)
         requested = set(modalities) if modalities is not None else set(available)
@@ -326,23 +357,33 @@ class BaseSequence(ABC):
         per_frame = {
             Modality.RGB: (_rgb, None),
             Modality.RGB_SEMANTIC_MASK: (
-                lambda i: self._resize(self.get_rgb_semantic_mask(sensor_id, i), image_size, nearest),
+                lambda i: self._resize(
+                    self.get_rgb_semantic_mask(sensor_id, i), image_size, nearest
+                ),
                 np.int32,
             ),
             Modality.RGB_DYNAMIC_MASK: (
-                lambda i: self._resize(self.get_rgb_dynamic_mask(sensor_id, i), image_size, nearest),
+                lambda i: self._resize(
+                    self.get_rgb_dynamic_mask(sensor_id, i), image_size, nearest
+                ),
                 bool,
             ),
             Modality.RGB_VALID_MASK: (
-                lambda i: self._resize(self.get_rgb_valid_mask(sensor_id, i), image_size, nearest),
+                lambda i: self._resize(
+                    self.get_rgb_valid_mask(sensor_id, i), image_size, nearest
+                ),
                 bool,
             ),
             Modality.DEPTH: (
-                lambda i: self._resize(self.get_depth(sensor_id, i), image_size, nearest),
+                lambda i: self._resize(
+                    self.get_depth(sensor_id, i), image_size, nearest
+                ),
                 np.float32,
             ),
             Modality.DEPTH_CONFIDENCE: (
-                lambda i: self._resize(self.get_depth_confidence(sensor_id, i), image_size, nearest),
+                lambda i: self._resize(
+                    self.get_depth_confidence(sensor_id, i), image_size, nearest
+                ),
                 np.float32,
             ),
         }
