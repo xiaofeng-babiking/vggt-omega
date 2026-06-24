@@ -41,7 +41,7 @@ class BaseSE3Trajectory(ABC):
 
     def __len__(self) -> int:
         """Number of frames N."""
-        return len(self._tstamps)
+        return len(self._poses)
 
     def __getitem__(self, index: Any) -> "BaseSE3Trajectory":
         """Select frames by ``index`` (int / slice / list / array / bool mask),
