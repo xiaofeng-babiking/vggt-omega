@@ -31,3 +31,5 @@ docs/
 
 # Local diagnostic/probe scripts (not for commit)
 scripts/
+
+.claude
