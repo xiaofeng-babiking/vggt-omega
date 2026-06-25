@@ -216,6 +216,27 @@ class Trainer:
     def _unwrapped_model(self):
         return self.model.module if isinstance(self.model, DistributedDataParallel) else self.model
 
+    def _full_state_dict(self):
+        """Consolidated, plain (non-DTensor) model state dict. Collective under FSDP."""
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+
+            return get_model_state_dict(
+                self.model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+            )
+        return self._unwrapped_model().state_dict()
+
+    def _full_optim_state_dict(self):
+        """Consolidated optimizer state dict. Collective under FSDP."""
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict, StateDictOptions
+
+            return get_optimizer_state_dict(
+                self.model, self.optimizer,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
+        return self.optimizer.state_dict()
+
     def _build_data(self, data_override):
         if data_override is not None:
             self.data = data_override
@@ -351,16 +372,17 @@ class Trainer:
 
     # --- checkpointing --------------------------------------------------------------
     def _save(self, step):
+        # Gather BEFORE the rank guard: under FSDP these are collective and every
+        # rank must participate (rank 0 alone would deadlock).
+        model_sd = self._full_state_dict()
+        optim_sd = self._full_optim_state_dict()
         if self.rank != 0:
             return
-        torch.save(
-            self._unwrapped_model().state_dict(),
-            os.path.join(self.out_dir, f"model_step{step:06d}.pt"),
-        )
+        torch.save(model_sd, os.path.join(self.out_dir, f"model_step{step:06d}.pt"))
         state = {
             "step": step,
             "epoch": self._epoch,
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": optim_sd,
             "scheduler": self.scheduler.state_dict(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
@@ -387,8 +409,21 @@ class Trainer:
             raise FileNotFoundError(
                 f"missing model checkpoint {model_path} for sidecar {trainer_ckpt_path}"
             )
-        self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
-        self.optimizer.load_state_dict(state["optimizer"])
+        model_sd = torch.load(model_path, map_location="cpu")
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import (
+                StateDictOptions,
+                set_model_state_dict,
+                set_optimizer_state_dict,
+            )
+
+            opts = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True)
+            set_model_state_dict(self.model, model_sd, options=opts)
+            # optim state dict is the 3rd POSITIONAL arg; optimizer already wraps params.
+            set_optimizer_state_dict(self.model, self.optimizer, state["optimizer"], options=opts)
+        else:
+            self._unwrapped_model().load_state_dict(model_sd)
+            self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         torch.set_rng_state(state["torch_rng"])
         cuda_rng = state.get("cuda_rng")
