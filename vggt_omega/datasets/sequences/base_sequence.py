@@ -109,6 +109,23 @@ class BaseSequence(ABC):
         """Get frame index by unique id."""
         return self._manifest[sensor_id][Modality.NAME].index(frame_name)
 
+    def get_frame_indices(
+        self, sensor_id: Union[int, str], frame_names: List[int]
+    ) -> List[int]:
+        """Get frame indices by unique ids (bulk find/map).
+
+        High-performance counterpart of :meth:`get_frame_index`: builds a
+        ``name -> position`` map over the sensor's frame-sorted ``NAME`` list
+        once (``O(M)``) and resolves each requested name in ``O(1)``, i.e.
+        ``O(M + N)`` total versus the ``O(N * M)`` of calling ``list.index`` per
+        name. Frame names are unique ids (``Modality.NAME``), so the map is
+        unambiguous. Returned indices follow ``frame_names`` order; a name absent
+        from the sensor's timeline raises ``KeyError``.
+        """
+        names = self._manifest[sensor_id][Modality.NAME]
+        name_to_index = {name: index for index, name in enumerate(names)}
+        return [name_to_index[name] for name in frame_names]
+
     def get_frame_file(
         self,
         sensor_id: Union[int, str],
@@ -361,7 +378,7 @@ class BaseSequence(ABC):
         # Per-frame modalities decoded by looping frame_names (stacked along axis 0).
         # Each entry: (getter, PIL interp, output dtype, optional post-fn).
         frame_names = list(frame_names)
-        frame_idxes = [self.get_frame_index(sensor_id, name) for name in frame_names]
+        frame_idxes = self.get_frame_indices(sensor_id, frame_names)
         nearest, bilinear = Image.NEAREST, Image.BILINEAR
 
         def _get_rgb_wrapper(name):
@@ -410,7 +427,9 @@ class BaseSequence(ABC):
             if spec is None:
                 continue
             getter, dtype = spec
-            stacked = np.stack([np.asarray(getter(name)) for name in frame_names], axis=0)
+            stacked = np.stack(
+                [np.asarray(getter(name)) for name in frame_names], axis=0
+            )
             out[mod] = stacked.astype(dtype) if dtype is not None else stacked
 
         # TIMESTAMP: (N,) float64 vector.
