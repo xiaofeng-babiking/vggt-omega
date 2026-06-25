@@ -409,7 +409,6 @@ class Trainer:
             raise FileNotFoundError(
                 f"missing model checkpoint {model_path} for sidecar {trainer_ckpt_path}"
             )
-        model_sd = torch.load(model_path, map_location="cpu")
         if self.parallel == "fsdp":
             from torch.distributed.checkpoint.state_dict import (
                 StateDictOptions,
@@ -418,11 +417,15 @@ class Trainer:
             )
 
             opts = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True)
+            # Only rank 0 needs the full weights on disk; broadcast_from_rank0
+            # scatters them to every rank's shards, so non-rank-0 ranks need no
+            # access to model_path (no shared-FS requirement for the weights file).
+            model_sd = torch.load(model_path, map_location="cpu") if self.rank == 0 else {}
             set_model_state_dict(self.model, model_sd, options=opts)
             # optim state dict is the 3rd POSITIONAL arg; optimizer already wraps params.
             set_optimizer_state_dict(self.model, self.optimizer, state["optimizer"], options=opts)
         else:
-            self._unwrapped_model().load_state_dict(model_sd)
+            self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
             self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         torch.set_rng_state(state["torch_rng"])

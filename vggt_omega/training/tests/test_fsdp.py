@@ -6,6 +6,8 @@ N gloo procs, run fn(rank, world_size, ...), collect per-rank results. FSDP runs
 on a CPU DeviceMesh ("cpu") in fp32 here — the bf16 path is validated by the GPU
 smoke (see plan Task 8).
 """
+import tempfile
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -107,7 +109,6 @@ def test_fsdp_grads_match_single_process():
         assert torch.allclose(got[name], ref[name], atol=2e-4, rtol=1e-3), name
 
 
-import tempfile, os as _os
 from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
 
 
