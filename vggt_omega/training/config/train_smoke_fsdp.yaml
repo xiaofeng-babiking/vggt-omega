@@ -1,38 +1,27 @@
-# TUM overfitting experiment — 8-GPU DDP, dynamic SE(3) frame-window sampling.
+# FSDP2 smoke-test config: TUM-only, 20 steps, single node multi-GPU.
 #
-#   .venv/bin/torchrun --standalone --nproc_per_node=8 train.py \
-#       --config vggt_omega/training/config/train_tum_overfit_se3.yaml \
-#       --out_root outputs --run_name tum_overfit_se3_30k
+#   CUDA_VISIBLE_DEVICES=6,7 OMP_NUM_THREADS=8 \
+#   .venv/bin/torchrun --standalone --nproc_per_node=2 train.py \
+#       --config vggt_omega/training/config/train_smoke_fsdp.yaml \
+#       --run_name smoke_fsdp
 #
-# Purpose:
-#   (1) exercise the SE(3) sampler (sample_se3_trajectory, hard-wired into
-#       SequenceDataset._se3_sample_ids) under a DYNAMIC per-batch frame count
-#       drawn from img_nums=[1,24] over a random [start,end] window, and confirm
-#       it keeps 8 GPUs fed (watch perf/imgs_per_sec, perf/step_time);
-#   (2) overfit a small TUM set and watch the camera-pose loss converge
-#       (train/loss_camera, printed every log_interval).
-#
-# Notes vs the other train_*.yaml (which still carry PRE-reorg module paths and
-# won't instantiate):
-#   - post-reorg paths: dataloaders.{dynamic_dataloader,composed_dataset,
-#     sequence_dataset}, sequences.tum.TumSequence;
-#   - tracks disabled (track_util removed in 9a740c9 -> load_track=true raises),
-#     so the matching loss is off (match weight 0); camera/depth/point stay on;
-#   - TUM kwargs are rgbd_sync_diff/depth_scale (TumSequence.__init__), not the
-#     stale assoc_max_diff/intrinsics.
+# Based on train_tum_overfit_se3.yaml (post-reorg paths, load_track=false).
+# The only differences are: max_steps=20, finer log/ckpt intervals,
+# optim.parallel=fsdp, and the top-level fsdp: block.
+# Validation is off (val_interval >> max_steps).
 
 run:
-  output_dir: outputs/tum_overfit_se3   # train.py overrides with --out_root/--run_name
-  max_steps: 30000
-  log_interval: 20                      # ~1500 console/TB log points over the run
-  img_log_interval: 1000
-  val_interval: 5000                    # rank-0 TUM ATE every 5k steps (bonus pose curve)
-  ckpt_interval: 5000
-  keep_last: 3
+  output_dir: outputs/train_smoke_fsdp  # train.py overrides with --out_root/--run_name
+  max_steps: 20
+  log_interval: 1
+  img_log_interval: 0
+  val_interval: 100000                  # > max_steps: validation off for the smoke run
+  ckpt_interval: 10
+  keep_last: 2
   seed: 42
 
 optim:
-  parallel: ddp              # ddp (default) | fsdp
+  parallel: fsdp             # ddp (default) | fsdp
   # 2e-4 is the paper's 128-GPU peak; high for an 8-GPU fine-tune off the
   # pretrained checkpoint. Warmup (5% -> 1500 steps) ramps in; if early
   # train/loss_camera spikes badly, drop to ~5e-5.
@@ -43,6 +32,14 @@ optim:
   grad_clip: 1.0
   grad_compression: bf16                # halve the gradient allreduce on PCIe
   fused: true                           # fused AdamW on CUDA
+
+fsdp:
+  reshard_after_forward: true
+  param_dtype: "none"      # model heads enforce fp32 internally; don't cast params via FSDP
+  reduce_dtype: bfloat16   # bf16 gradient reduction for communication efficiency
+  hybrid_shard: false      # set true for multi-node (shard intra-node, replicate inter-node)
+  shard_size: null         # null -> LOCAL_WORLD_SIZE (gpus per node)
+  cpu_offload: false
 
 loss:
   # Camera + mono-depth only (experiment scope). point off: TUM world-points are
