@@ -46,9 +46,9 @@ def _shard_and_introspect(rank, world_size):
     mesh = init_device_mesh("cpu", (world_size,), mesh_dim_names=("dp_shard",))
     apply_fsdp(model, mesh, param_dtype="float32", reduce_dtype="float32")
     # every block param is now a DTensor
-    block_params_are_dtensor = all(
-        isinstance(p, DTensor) for p in model.blocks.parameters()
-    )
+    block_params = list(model.blocks.parameters())
+    assert block_params, "no block params found post-FSDP"
+    block_params_are_dtensor = all(isinstance(p, DTensor) for p in block_params)
     x = torch.randn(4, 6, 32)
     out = model(x)
     F.mse_loss(out, torch.zeros_like(out)).backward()
