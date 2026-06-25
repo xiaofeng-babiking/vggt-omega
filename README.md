@@ -366,14 +366,28 @@ python train.py \
   --run_name my_run
 ```
 
-Multi-GPU data parallelism (DDP) via `torchrun`, one rank per GPU:
+Multi-GPU data parallelism (DDP) via `torchrun`, one rank per GPU. Set
+`OMP_NUM_THREADS` to silence torchrun's thread-oversubscription warning;
+`train.py` already exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+itself (the dynamic per-step batch shapes fragment the default CUDA allocator
+into an OOM otherwise):
 
 ```bash
-torchrun --standalone --nproc_per_node=8 train.py \
-  --config vggt_omega/training/config/train_default.yaml \
+OMP_NUM_THREADS=8 torchrun --standalone --nproc_per_node=8 train.py \
+  --config vggt_omega/training/config/train_tum_overfit_se3.yaml \
   --out_root outputs \
-  --run_name my_run_8gpu
+  --run_name tum_overfit_se3_8gpu
 ```
+
+`train_tum_overfit_se3.yaml` is the **currently-runnable** 8-GPU config: TUM-only,
+dynamic SE(3) frame-window sampling (`img_nums: [1, 24]`), camera + mono-depth
+losses, on the post-reorg `dataloaders.*` / `sequences.tum` module paths. The full
+multi-vendor `train_default.yaml` / `train_100k.yaml` still carry the pre-reorg
+paths (`vggt_omega.datasets.vendors.*`, `…datasets.composed_dataset`) — only TUM
+has been migrated to the new layout, so fix those `_target_`s before launching the
+16-vendor mixture. Progress (per-step camera/depth loss, `perf/*`) lands in
+TensorBoard under `<out_root>/<run_name>/tb`; rank 0 validates every
+`run.val_interval` steps (`val/tum/ate_rmse`, …).
 
 | Flag | Meaning |
 | :--- | :--- |
