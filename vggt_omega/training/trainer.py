@@ -131,7 +131,11 @@ class Trainer:
 
     # --- setup ----------------------------------------------------------------
     def _setup_distributed(self):
+        self.parallel = str(OmegaConf.select(self.cfg, "optim.parallel", default="ddp")).lower()
+        if self.parallel not in ("ddp", "fsdp"):
+            raise ValueError(f"optim.parallel must be 'ddp' or 'fsdp', got {self.parallel!r}")
         world = int(os.environ.get("WORLD_SIZE", "1"))
+        self.mesh = None
         if world > 1:
             from vggt_omega.distributed.process_group import init_distributed
 
@@ -141,6 +145,27 @@ class Trainer:
             self.rank, self.world_size, self.local_rank = 0, 1, 0
             self.device = (
                 torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
+            )
+            if self.parallel == "fsdp" and not dist.is_initialized():
+                # FSDP needs a real process group even at world=1. Use NCCL on CUDA,
+                # gloo on CPU; both as a single-rank group.
+                os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+                os.environ.setdefault("MASTER_PORT", "29555")
+                if self.device.type == "cuda":
+                    torch.cuda.set_device(0)
+                dist.init_process_group(
+                    backend="nccl" if self.device.type == "cuda" else "gloo",
+                    rank=0,
+                    world_size=1,
+                )
+        if self.parallel == "fsdp":
+            from vggt_omega.training.parallel import build_dp_mesh
+
+            self.mesh = build_dp_mesh(
+                self.world_size,
+                hybrid_shard=bool(OmegaConf.select(self.cfg, "fsdp.hybrid_shard", default=False)),
+                shard_size=OmegaConf.select(self.cfg, "fsdp.shard_size", default=None),
+                device_type=self.device.type,
             )
         # The dataloader worker_init_fn reads RANK unconditionally — set before any build.
         os.environ.setdefault("RANK", "0")
@@ -163,7 +188,20 @@ class Trainer:
                 logger.info(f"restored {n} encoder tensors from {encoder_src}")
         model.aggregator.gradient_checkpointing = bool(self.cfg.model.gradient_checkpointing)
         model = model.to(self.device)
-        if self.world_size > 1:
+        if self.parallel == "fsdp":
+            from vggt_omega.training.parallel import apply_fsdp
+
+            apply_fsdp(
+                model,
+                self.mesh,
+                reshard_after_forward=bool(
+                    OmegaConf.select(self.cfg, "fsdp.reshard_after_forward", default=True)
+                ),
+                param_dtype=str(OmegaConf.select(self.cfg, "fsdp.param_dtype", default="bfloat16")),
+                reduce_dtype=str(OmegaConf.select(self.cfg, "fsdp.reduce_dtype", default="bfloat16")),
+                cpu_offload=bool(OmegaConf.select(self.cfg, "fsdp.cpu_offload", default=False)),
+            )
+        elif self.world_size > 1:
             model = DistributedDataParallel(
                 model,
                 device_ids=[self.local_rank],
