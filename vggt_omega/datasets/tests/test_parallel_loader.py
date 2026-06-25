@@ -12,14 +12,13 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from vggt_omega.datasets.base_dataset import BaseDataset
-from vggt_omega.datasets.modality import Modality
-from vggt_omega.datasets.parallel_loader import (
+from vggt_omega.datasets.dataloaders.parallel_loader import (
     merge_chunk_batches,
     parallel_get_data,
     resolve_num_workers,
     split_ids,
 )
+from torch.utils.data import Dataset
 
 TUM_DIR = "/jfs/guibiao/streamVGGT/data/eval/tum"
 HAVE_TUM = os.path.isdir(TUM_DIR)
@@ -60,7 +59,7 @@ def _eval_common():
     )
 
 
-class FakeVendor(BaseDataset):
+class FakeVendor(Dataset):
     """Deterministic synthetic vendor following the standard get_data contract.
 
     Every per-frame array is a pure function of the frame id, so chunked
@@ -69,28 +68,31 @@ class FakeVendor(BaseDataset):
 
     AVAILABLE = frozenset(
         {
-            Modality.IMAGE,
-            Modality.DEPTH,
-            Modality.INTRINSICS,
-            Modality.EXTRINSICS,
-            Modality.POINT_MASK,
-            Modality.WORLD_POINTS,
-            Modality.CAM_POINTS,
-            Modality.SKY_MASK,
-            Modality.TIMESTAMP,
+            "images",
+            "depths",
+            "intrinsics",
+            "extrinsics",
+            "point_masks",
+            "world_points",
+            "cam_points",
+            "sky_masks",
+            "timestamps",
         }
     )
 
     def __init__(self, common_conf, num_frames=64, h=32, w=32, fail_on_ids=()):
-        super().__init__(common_conf=common_conf)
+        super().__init__()
         self.training = common_conf.training
         self.inside_random = common_conf.inside_random
         self.get_nearby = common_conf.get_nearby
+        # RNG-bearing flags parallel_get_data inspects to force the serial fallback.
+        self.landscape_check = common_conf.landscape_check
+        self.rescale_aug = common_conf.rescale_aug
         self.num_frames = num_frames
         self.h, self.w = h, w
         self.sequence_list = ["seq0"]
         self.sequence_list_len = 1
-        self.len_train = num_frames
+        self._epoch_samples = num_frames
         self.available_modalities = self.AVAILABLE
         self.fail_on_ids = set(fail_on_ids)
         self.call_log = []  # one entry per get_data call (list.append is GIL-atomic)
@@ -100,6 +102,15 @@ class FakeVendor(BaseDataset):
 
     def native_image_size(self, local_idx=0):
         return (self.h, self.w)
+
+    def __len__(self):
+        return self._epoch_samples
+
+    def get_target_shape(self, aspect_ratio):
+        short_size = int(64 * aspect_ratio)
+        if short_size % 16 != 0:
+            short_size = (short_size // 16) * 16
+        return np.array([short_size, 64])
 
     def _frame(self, i):
         i = int(i)
@@ -170,7 +181,7 @@ class FakeVendor(BaseDataset):
 
 def _composed(common=None, **vendor_kwargs):
     cfg = {
-        "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
+        "_target_": "vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset",
         "dataset_configs": [
             {
                 "_target_": "vggt_omega.datasets.tests.test_parallel_loader.FakeVendor",
@@ -213,7 +224,7 @@ def _mini_batch(ids):
         "timestamps": np.array([float(i) for i in ids]),
         "tracks": None,
         "is_metric": True,
-        "modalities": {Modality.IMAGE},
+        "modalities": {"images"},
     }
 
 
@@ -236,7 +247,7 @@ def test_merge_stacks_lists_concats_arrays_and_sums_frame_num():
     assert merged["seq_name"] == "s"
     assert merged["is_metric"] is True
     assert merged["tracks"] is None
-    assert merged["modalities"] == {Modality.IMAGE}
+    assert merged["modalities"] == {"images"}
 
 
 def test_merge_single_chunk_is_identity_modulo_stacking():
@@ -369,7 +380,7 @@ def test_cv2_thread_cap_set_during_fanout_and_restored():
 def test_cv2_guard_nests_and_restores_outermost_value():
     import cv2
 
-    from vggt_omega.datasets.parallel_loader import _cv2_single_threaded
+    from vggt_omega.datasets.dataloaders.parallel_loader import _cv2_single_threaded
 
     original = cv2.getNumThreads()
     cv2.setNumThreads(8)
@@ -385,7 +396,7 @@ def test_cv2_guard_nests_and_restores_outermost_value():
 
 
 def test_resolve_num_workers(monkeypatch):
-    import vggt_omega.datasets.parallel_loader as pl
+    import vggt_omega.datasets.dataloaders.parallel_loader as pl
 
     assert resolve_num_workers(4) == 4
     assert resolve_num_workers(0) == 1  # the --loader_workers "0 = serial" contract
@@ -438,14 +449,18 @@ def test_tensorize_accepts_prestacked_arrays():
 @pytest.mark.skipif(not HAVE_TUM, reason=f"TUM data not found at {TUM_DIR}")
 def test_tum_get_sample_parallel_equals_serial():
     cfg = {
-        "_target_": "vggt_omega.datasets.composed_dataset.ComposedDataset",
+        "_target_": "vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset",
         "dataset_configs": [
             {
-                "_target_": "vggt_omega.datasets.vendors.tum.TumDataset",
+                "_target_": "vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset",
+                "sequence_cls": {
+                    "_target_": "hydra.utils.get_class",
+                    "path": "vggt_omega.datasets.sequences.tum.TumSequence",
+                },
                 "split": "train",
-                "TUM_DIR": TUM_DIR,
+                "data_root": TUM_DIR,
                 "sequences": ["rgbd_dataset_freiburg3_sitting_halfsphere"],
-                "len_train": 20,
+                "sequence_kwargs": {"rgbd_sync_diff": 0.02, "depth_scale": 5000.0},
             }
         ],
     }

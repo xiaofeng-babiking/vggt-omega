@@ -49,13 +49,13 @@ from vggt_omega import datasets as vggt_datasets
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
-from vggt_omega.datasets.composed_dataset import ComposedDataset
+from vggt_omega.datasets.dataloaders.composed_dataset import ComposedDataset
 from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
 logger = get_logger("vggt_omega.inference")
 
 # Per-dataset configure dir (ships tum.yaml, the default --configure target).
-DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "config")
+DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "configures")
 
 # --- command-line flags ------------------------------------------------------
 # Inputs to locate (checkpoint, configure) plus the output/fusion knobs. The

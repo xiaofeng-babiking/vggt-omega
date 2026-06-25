@@ -17,9 +17,9 @@ skyseg.onnx.tmp
 *.pth
 *.safetensors
 
-uv.lock
-
 .vscode
+
+opencode.json
 
 .mcp.json
 
@@ -28,3 +28,8 @@ uv.lock
 docs/
 
 .dataset_surveys/
+
+# Local diagnostic/probe scripts (not for commit)
+scripts/
+
+.claude

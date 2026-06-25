@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from vggt_omega.datasets.dynamic_dataloader import DynamicBatchSampler, DynamicDistributedSampler
+from vggt_omega.datasets.dataloaders.dynamic_dataloader import DynamicBatchSampler, DynamicDistributedSampler
 
 
 def _make_sampler(rank, global_np_seed, epoch=0, seed=42, n_items=10000):
@@ -75,7 +75,7 @@ def test_set_epoch_reseeds_frame_draws_so_epochs_differ():
 def test_get_loader_calls_batch_sampler_set_epoch():
     # Pin the routing the frozen-schedule bug missed: get_loader must reseed the
     # batch sampler (not only the inner DistributedSampler).
-    from vggt_omega.datasets.dynamic_dataloader import DynamicTorchDataset
+    from vggt_omega.datasets.dataloaders.dynamic_dataloader import DynamicTorchDataset
 
     dtd = object.__new__(DynamicTorchDataset)
     seen = []
