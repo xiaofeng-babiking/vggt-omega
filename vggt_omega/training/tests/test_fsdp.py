@@ -66,3 +66,42 @@ def test_apply_fsdp_shards_blocks_and_runs():
         assert r["block_params_are_dtensor"] is True
         assert r["out_shape"] == (4, 6, 32)
         assert r["grad_finite"] is True
+
+
+def _reference_grads():
+    """Single-process, full-batch mean-loss gradients (the parity target)."""
+    torch.manual_seed(0)
+    model = _tiny_stack()
+    torch.manual_seed(1)
+    x = torch.randn(4, 6, 32)
+    torch.manual_seed(2)
+    target = torch.randn(4, 6, 32)
+    F.mse_loss(model(x), target).backward()
+    return {name: p.grad.detach().clone() for name, p in model.named_parameters()}
+
+
+def _fsdp_grads(rank, world_size):
+    torch.manual_seed(0)
+    model = _tiny_stack()
+    mesh = init_device_mesh("cpu", (world_size,), mesh_dim_names=("dp_shard",))
+    apply_fsdp(model, mesh, param_dtype="float32", reduce_dtype="float32")
+    torch.manual_seed(1)
+    x = torch.randn(4, 6, 32)
+    torch.manual_seed(2)
+    target = torch.randn(4, 6, 32)
+    lo, hi = rank * 2, rank * 2 + 2  # equal local batch of 2 per rank
+    F.mse_loss(model(x[lo:hi]), target[lo:hi]).backward()
+    # full_tensor() reconstructs the unsharded grad (all ranks agree)
+    return {
+        name: (p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad).detach().clone()
+        for name, p in model.named_parameters()
+    }
+
+
+def test_fsdp_grads_match_single_process():
+    ref = _reference_grads()
+    results = run_distributed(_fsdp_grads, 2)
+    got = results[0]
+    assert set(got) == set(ref)
+    for name in ref:
+        assert torch.allclose(got[name], ref[name], atol=2e-4, rtol=1e-3), name
