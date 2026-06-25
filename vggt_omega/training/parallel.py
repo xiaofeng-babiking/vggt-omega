@@ -74,7 +74,7 @@ def apply_fsdp(
         mesh=mesh,
         reshard_after_forward=reshard_after_forward,
         mp_policy=build_mp_policy(param_dtype, reduce_dtype),
-        offload_policy=CPUOffloadPolicy() if cpu_offload else OffloadPolicy(),
+        offload_policy=CPUOffloadPolicy(pin_memory=True) if cpu_offload else OffloadPolicy(),
     )
     for module in model.modules():
         if isinstance(module, SelfAttentionBlock):
