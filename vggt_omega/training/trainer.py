@@ -305,8 +305,10 @@ class Trainer:
         predictions = self.model(images, return_last_patch_tokens=match_on)
         losses = self.loss_computer(predictions, batch, tuple(images.shape[-2:]))
         losses["total"].backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), self.cfg.optim.grad_clip
+        from vggt_omega.training.parallel import grad_norm_to_float
+
+        grad_norm = grad_norm_to_float(
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.optim.grad_clip)
         )
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
