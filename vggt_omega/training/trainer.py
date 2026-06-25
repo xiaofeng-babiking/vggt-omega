@@ -440,15 +440,25 @@ class Trainer:
 
     # --- validation -----------------------------------------------------------------
     def _validate(self, step):
-        if self.rank != 0:
-            return
+        if self.parallel == "fsdp":
+            # The param all-gather is collective: EVERY rank must call the gather,
+            # then only rank 0 evaluates a transient unsharded copy. A rank-0-only
+            # forward on the sharded model would deadlock.
+            full_sd = self._full_state_dict()
+            if self.rank != 0:
+                return
+            model = VGGTOmega(embed_dim=int(self.cfg.model.embed_dim)).to(self.device)
+            model.load_state_dict(full_sd)
+        else:
+            if self.rank != 0:
+                return
+            model = self._unwrapped_model()
         # Lazy imports: `inference` registers gflags at import (train.py keeps its
         # flag names disjoint) and `evaluates` pulls in evo/matplotlib.
         import inference
         from hydra.utils import instantiate
         from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
-        model = self._unwrapped_model()
         model.eval()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()  # release training-shape blocks before the val forward
