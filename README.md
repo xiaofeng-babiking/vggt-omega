@@ -405,7 +405,7 @@ NCCL_DEBUG=INFO NCCL_SOCKET_IFNAME=<nic> OMP_NUM_THREADS=8 torchrun \
 
 For a full FSDP run, copy a real config (e.g. `train_default.yaml`), set
 `optim.parallel: fsdp`, and add an `fsdp:` block. Checkpoints are consolidated to a
-single bare `state_dict` on rank 0, so `inference.py` / `demo` /
+single bare `state_dict` on rank 0, so `inference.py` / `demo_gradio.py` /
 `distributed_inference.py` load FSDP checkpoints unchanged. The `fsdp:` block:
 
 | Knob | Default | What it does |
@@ -423,6 +423,7 @@ a reachable `--rdzv_endpoint` + `--node_rank` on every node, NCCL NIC selection
 so the per-block all-gather stays on intra-node NVLink/PCIe and only the gradient reduce
 crosses the slow inter-node link. The data sampler shards by global rank and the
 checkpoint gather works across nodes — both need no change.
+On resume, the consolidated weights file is read only on rank 0 and broadcast, but the trainer sidecar (`trainer_step*.pt`, holding optimizer/scheduler/RNG) is read on every rank — so on multi-node it must live on shared storage (or be staged to each node).
 
 `train_tum_overfit_se3.yaml` is the **currently-runnable** 8-GPU config: TUM-only,
 dynamic SE(3) frame-window sampling (`img_nums: [1, 24]`), camera + mono-depth

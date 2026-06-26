@@ -189,6 +189,7 @@ class Trainer:
         model.aggregator.gradient_checkpointing = bool(self.cfg.model.gradient_checkpointing)
         model = model.to(self.device)
         if self.parallel == "fsdp":
+            # optim.grad_compression is a DDP comm hook; under FSDP, the gradient-reduce dtype is fsdp.reduce_dtype instead.
             from vggt_omega.training.parallel import apply_fsdp
 
             apply_fsdp(
