@@ -51,16 +51,24 @@ require_cmd() {
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found on PATH. ${hint}"
 }
 
-# wget with resume; falls back to curl. Args: <url> <out_path>
+# Resumable download, wget-first with a curl fallback. Args: <url> <out_path>
+# We try wget, then fall back to curl if wget *fails* (not just if it's absent):
+# some CDNs (e.g. download.microsoft.com) don't serve the full intermediate
+# chain, and wget won't fetch the missing issuer via AIA the way curl/OpenSSL
+# does -- so wget reports "unable to verify the issuer's authority" while curl
+# verifies fine. Certificate verification stays ON in both paths.
 fetch() {
     local url="$1" out="$2"
     if command -v wget >/dev/null 2>&1; then
-        wget --continue --tries=5 --timeout=60 -O "$out" "$url"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -L --retry 5 --continue-at - -o "$out" "$url"
-    else
-        die "neither wget nor curl is available"
+        wget --continue --tries=5 --timeout=60 -O "$out" "$url" && return 0
+        command -v curl >/dev/null 2>&1 && warn "wget failed for $url -- falling back to curl"
     fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -L --retry 5 --continue-at - -o "$out" "$url" && return 0
+        return 1
+    fi
+    command -v wget >/dev/null 2>&1 || die "neither wget nor curl is available"
+    return 1
 }
 
 # Print a clearly-formatted "manual access required" block and exit non-zero.

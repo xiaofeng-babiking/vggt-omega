@@ -38,6 +38,16 @@ require_cmd unzip "Install it (e.g. 'apt-get install unzip')."
 
 BASE="https://download.microsoft.com/download/2/8/5/28564B23-0828-408F-8631-23B1EFF1DAC8"
 
+# unzip wrapper: exit code 1 means "warnings, but extraction completed" -- treat
+# it as success; only code >= 2 (a real error) is a failure. 7-Scenes' nested
+# seq-NN.zip dir entries trip a benign "ucsize <> csize for STORED entry" warning
+# yet still extract every frame correctly.
+unz() {
+    local rc=0
+    unzip -q -o "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+
 ALL_SCENES=(chess fire heads office pumpkin redkitchen stairs)
 
 # Resolve the scene list per the precedence documented in the header.
@@ -69,7 +79,7 @@ for scene in "${SCENES[@]}"; do
     fi
 
     log "Extracting $scene.zip"
-    if ! unzip -q -o "$zip" -d "$DEST_DIR"; then
+    if ! unz "$zip" -d "$DEST_DIR"; then
         warn "extract failed for $scene (corrupt/partial archive?) -- skipping"
         failed=$((failed + 1)); continue
     fi
@@ -78,7 +88,7 @@ for scene in "${SCENES[@]}"; do
     inner_failed=0
     shopt -s nullglob
     for seqzip in "$scene_dir"/seq-*.zip; do
-        if unzip -q -o "$seqzip" -d "$scene_dir"; then
+        if unz "$seqzip" -d "$scene_dir"; then
             [ "${SEVEN_SCENES_KEEP_ZIP:-0}" = "1" ] || rm -f "$seqzip"
         else
             warn "inner extract failed: $(basename "$seqzip")"
