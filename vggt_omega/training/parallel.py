@@ -60,13 +60,22 @@ def build_dp_mesh(world_size, *, hybrid_shard=False, shard_size=None, device_typ
     )
 
 
-def build_mp_policy(param_dtype="bfloat16", reduce_dtype="bfloat16") -> MixedPrecisionPolicy:
-    """Sharded master weights stay fp32; compute casts to param_dtype, reduce in reduce_dtype."""
+def build_mp_policy(param_dtype="none", reduce_dtype="bfloat16") -> MixedPrecisionPolicy:
+    """Build the FSDP2 MixedPrecisionPolicy.
+
+    param_dtype defaults to "none" because the model heads force fp32 LayerNorm
+    internally (they call ``tokens.float()`` / ``x.float()`` before every
+    ``LayerNorm``).  A bf16 param cast converts those LayerNorm weights to bf16
+    while the inputs stay fp32, causing an ``F.layer_norm(fp32_input, bf16_weight)``
+    dtype mismatch that crashes the forward.  With param_dtype="none" sharded
+    parameters stay fp32; bf16 compute is handled by the model's own internal
+    autocast; gradients reduce in reduce_dtype (bf16 by default).
+    """
     return MixedPrecisionPolicy(param_dtype=_dtype(param_dtype), reduce_dtype=_dtype(reduce_dtype))
 
 
 def apply_fsdp(
-    model, mesh, *, reshard_after_forward=True, param_dtype="bfloat16",
+    model, mesh, *, reshard_after_forward=True, param_dtype="none",
     reduce_dtype="bfloat16", cpu_offload=False,
 ) -> nn.Module:
     """Shard every SelfAttentionBlock, then the root model, in place. Returns the model."""

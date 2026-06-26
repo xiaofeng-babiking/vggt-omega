@@ -197,7 +197,7 @@ class Trainer:
                 reshard_after_forward=bool(
                     OmegaConf.select(self.cfg, "fsdp.reshard_after_forward", default=True)
                 ),
-                param_dtype=str(OmegaConf.select(self.cfg, "fsdp.param_dtype", default="bfloat16")),
+                param_dtype=str(OmegaConf.select(self.cfg, "fsdp.param_dtype", default="none")),
                 reduce_dtype=str(OmegaConf.select(self.cfg, "fsdp.reduce_dtype", default="bfloat16")),
                 cpu_offload=bool(OmegaConf.select(self.cfg, "fsdp.cpu_offload", default=False)),
             )
