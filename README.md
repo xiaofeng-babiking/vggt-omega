@@ -379,6 +379,51 @@ OMP_NUM_THREADS=8 torchrun --standalone --nproc_per_node=8 train.py \
   --run_name tum_overfit_se3_8gpu
 ```
 
+#### FSDP2 (sharded data parallel)
+
+DDP replicates the full model, gradients, and optimizer state on every rank;
+**FSDP2** (`optim.parallel: fsdp`) shards all three across the data-parallel group
+(~1/N per rank), freeing budget for bigger per-GPU batches, longer frame windows,
+or larger models. On a 2×A100 TUM smoke at 1B params, FSDP peaked at **46.2 GB vs
+DDP's 57.4 GB (~11 GB saved)** with an identical loss curve. Same launch as DDP —
+only the config changes:
+
+```bash
+# Single node, 8 GPUs — full shard
+OMP_NUM_THREADS=8 torchrun --standalone --nproc_per_node=8 train.py \
+  --config vggt_omega/training/config/train_smoke_fsdp.yaml --run_name fsdp_8gpu
+```
+
+```bash
+# Multi-node (2 nodes x 8 GPUs) — HSDP: shard within a node, replicate across nodes.
+# Run on EVERY node with a shared rendezvous; set fsdp.hybrid_shard: true in the config.
+NCCL_DEBUG=INFO NCCL_SOCKET_IFNAME=<nic> OMP_NUM_THREADS=8 torchrun \
+  --nnodes=2 --nproc_per_node=8 --node_rank=$NODE_RANK \
+  --rdzv_backend=c10d --rdzv_endpoint=$HEAD_NODE_IP:29500 \
+  train.py --config vggt_omega/training/config/train_smoke_fsdp.yaml
+```
+
+For a full FSDP run, copy a real config (e.g. `train_default.yaml`), set
+`optim.parallel: fsdp`, and add an `fsdp:` block. Checkpoints are consolidated to a
+single bare `state_dict` on rank 0, so `inference.py` / `demo` /
+`distributed_inference.py` load FSDP checkpoints unchanged. The `fsdp:` block:
+
+| Knob | Default | What it does |
+| :--- | :--- | :--- |
+| `fsdp.reshard_after_forward` | `true` | Re-shard params after forward (max memory savings; `false` keeps them gathered for fewer backward all-gathers — the key multi-node knob) |
+| `fsdp.param_dtype` | `none` | Dtype of the gathered param compute copy. `none` keeps params fp32 (compute is still bf16 via the model's own autocast). **bf16 is not yet usable**: the camera/dense heads upcast to fp32 before their `LayerNorm`s, so FSDP casting those norm weights to bf16 dtype-mismatches — a per-module-MP follow-up |
+| `fsdp.reduce_dtype` | `bfloat16` | Gradient reduce-scatter dtype (halves transport on PCIe; `float32` for max precision) |
+| `fsdp.hybrid_shard` | `false` | `true` → HSDP (shard intra-node, replicate inter-node) for multi-node |
+| `fsdp.shard_size` | `null` | HSDP shard-group size; `null` → `LOCAL_WORLD_SIZE` (GPUs per node) |
+| `fsdp.cpu_offload` | `false` | Offload sharded params/grads to CPU (last-resort memory; slows the step) |
+
+**Single-node vs multi-node:** single-node needs only `--standalone`. Multi-node needs
+a reachable `--rdzv_endpoint` + `--node_rank` on every node, NCCL NIC selection
+(`NCCL_SOCKET_IFNAME`, `NCCL_DEBUG=INFO` on the first run), and `fsdp.hybrid_shard: true`
+so the per-block all-gather stays on intra-node NVLink/PCIe and only the gradient reduce
+crosses the slow inter-node link. The data sampler shards by global rank and the
+checkpoint gather works across nodes — both need no change.
+
 `train_tum_overfit_se3.yaml` is the **currently-runnable** 8-GPU config: TUM-only,
 dynamic SE(3) frame-window sampling (`img_nums: [1, 24]`), camera + mono-depth
 losses, on the post-reorg `dataloaders.*` / `sequences.tum` module paths. The full
