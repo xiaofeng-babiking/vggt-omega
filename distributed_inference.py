@@ -27,15 +27,14 @@ from torch.profiler import ProfilerActivity, profile
 
 import gflags
 
-# Reuse all single-GPU helpers verbatim.
-import inference as single
-from inference import FLAGS  # the same gflags definitions (checkpoint, configure, ...)
+from vggt_omega import inference_common as common
+from vggt_omega.inference_common import FLAGS
+from vggt_omega.evaluates.scene import score_camera_pose, score_depth_frames, assemble_metrics
 from vggt_omega.distributed.attention import build_strategy
-from vggt_omega.distributed.eval_reduce import gather_pose_enc_to_rank0, reduce_depth_means
+from vggt_omega.distributed.eval_reduce import gather_pose_enc_to_rank0, reduce_depth
 from vggt_omega.distributed.model import build_cp_model
 from vggt_omega.distributed.process_group import cp_group, init_distributed
 from vggt_omega.distributed.shard import frame_counts_for, shard_frame_ids
-from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
 
@@ -100,10 +99,10 @@ def dump_local_shard(output_dir, frame_ids_local, frame_index_offset, pred, conf
 
     for i in range(len(frame_ids_local)):
         name = f"frame_{frame_index_offset + i:04d}.png"
-        single.save_uint16_image(pred_depth_2d[i], depth_scale, os.path.join(depth_dir, name))
-        single.save_uint16_image(pred_conf[i], conf_scale, os.path.join(conf_dir, name))
+        common.save_uint16_image(pred_depth_2d[i], depth_scale, os.path.join(depth_dir, name))
+        common.save_uint16_image(pred_conf[i], conf_scale, os.path.join(conf_dir, name))
 
-    world_points = single.unproject_depth_map_to_point_map(
+    world_points = common.unproject_depth_map_to_point_map(
         pred_depth, pred["pred_extrinsics"], pred["pred_intrinsics"]
     )
     points = world_points.reshape(-1, 3)
@@ -120,7 +119,7 @@ def dump_local_shard(output_dir, frame_ids_local, frame_index_offset, pred, conf
         keep = rng.choice(points.shape[0], size=max_points, replace=False)
         points, colors = points[keep], colors[keep]
     rank = dist.get_rank()
-    single.write_ply(os.path.join(output_dir, f"pointcloud_rank{rank}.ply"), points, colors)
+    common.write_ply(os.path.join(output_dir, f"pointcloud_rank{rank}.ply"), points, colors)
 
 
 def main():
@@ -128,9 +127,9 @@ def main():
     device = f"cuda:{local_rank}"
     group = cp_group()
 
-    cfg = single.load_config()
+    cfg = common.load_config()
     inf = cfg.inference
-    dataset = single.build_dataset(cfg)
+    dataset = common.build_dataset(cfg)
     strategy = build_strategy(FLAGS.cp_strategy)
     model = build_cp_model(FLAGS.checkpoint, group, strategy, device)
 
@@ -140,11 +139,11 @@ def main():
 
     for seq_index in range(num_seqs):
         seq_name = dataset.sequence_name(seq_index)
-        frame_ids = single.resolve_frame_ids(dataset, seq_index, inf.num_frames)  # global, ordered
+        frame_ids = common.resolve_frame_ids(dataset, seq_index, inf.num_frames)  # global, ordered
         local_ids = shard_frame_ids(frame_ids, rank, world_size)
         frame_index_offset = sum(frame_counts_for(len(frame_ids), world_size)[:rank])
 
-        sample = single.load_sample(dataset, seq_index, local_ids) if len(local_ids) else None
+        sample = common.load_sample(dataset, seq_index, local_ids) if len(local_ids) else None
 
         # Every rank must agree on (H, W) so per-frame token counts match across
         # ranks (the global-attention all_gather shapes must be identical). Rank 0
@@ -188,19 +187,19 @@ def main():
             dump_local_shard(output_dir, local_ids, frame_index_offset, pred,
                              FLAGS.conf_percentile, FLAGS.max_points)
 
-        # --- distributed eval ---
-        gt = single.gt_from_sample(sample) if sample is not None else {"gt_depth": np.zeros((0,))}
-        per_frame = []
-        if len(local_ids):
-            for i in range(len(local_ids)):
-                res = MonoDepthMetric(gt["gt_depth"][i], pred["pred_depth"][..., 0][i], align="median").run()
-                per_frame.append({"abs_rel": float(res["abs_rel"]["mean"]),
-                                  "delta1": float(res["delta"]["delta1"])})
-        depth_means = reduce_depth_means(per_frame, ["abs_rel", "delta1"], group)
+        # --- distributed eval (shared scene scorer + cross-rank reduce) ---
+        if sample is not None:
+            gt = common.gt_from_sample(sample)
+        else:
+            gt = {"gt_depth": np.zeros((0, 1, 1), np.float32),
+                  "gt_extrinsics": np.zeros((0, 3, 4), np.float32), "modalities": []}
+        modalities = set(gt.get("modalities") or [])
+
+        per_frame = (score_depth_frames(gt["gt_depth"], pred["pred_depth"][..., 0],
+                                        modalities=modalities) if len(local_ids) else [])
+        mono_depth = reduce_depth(per_frame, group)  # same dict (or None) on every rank
 
         full_pose = gather_pose_enc_to_rank0(pred["pose_enc"], group)
-        # GT extrinsics: each rank already loaded its shard -> gather (flattened to
-        # (1, n_local, 12)) to rank 0. Avoids re-loading all frames' GT on rank 0.
         if sample is not None:
             gt_ext_t = torch.from_numpy(gt["gt_extrinsics"]).reshape(1, -1, 12).to(device)
         else:
@@ -210,20 +209,25 @@ def main():
             full_ext, _ = encoding_to_camera(full_pose.to(device), images.shape[-2:])
             full_ext = full_ext.float().cpu().numpy()[0]
             gt_ext = full_gt_ext.float().cpu().numpy()[0].reshape(-1, 3, 4)
-            gt_c2w = single.world_to_camera_to_camera_to_world(gt_ext)
-            pred_c2w = single.world_to_camera_to_camera_to_world(full_ext)
             metrics_dir = os.path.join(output_dir, "metrics")
             os.makedirs(metrics_dir, exist_ok=True)
-            pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
-                vis_path=os.path.join(metrics_dir, "camera_pose"))
-            all_metrics = {"scene": seq_name, "num_frames": int(len(frame_ids)),
-                           "world_size": world_size, "cp_strategy": FLAGS.cp_strategy,
-                           "camera_pose": pose_metrics, "mono_depth": depth_means}
+            camera_pose = score_camera_pose(
+                common.world_to_camera_to_camera_to_world(gt_ext),
+                common.world_to_camera_to_camera_to_world(full_ext),
+                modalities=modalities, num_frames=len(frame_ids),
+                vis_path=os.path.join(metrics_dir, "camera_pose"),
+            )
+            all_metrics = assemble_metrics(
+                seq_name, len(frame_ids), camera_pose, mono_depth,
+                world_size=world_size, cp_strategy=FLAGS.cp_strategy,
+            )
             with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
                 json.dump(all_metrics, f, indent=2)
-            logger.info(f"[{seq_name}] {len(frame_ids)} frames -> {output_dir}\n"
-                        f"  ATE rmse = {pose_metrics['ate']['rmse']:.4f} m\n"
-                        f"  Abs Rel  = {depth_means['abs_rel']:.4f}")
+            logger.info(
+                f"[{seq_name}] {len(frame_ids)} frames -> {output_dir}\n"
+                f"  ATE rmse = {camera_pose['ate']['rmse']:.4f} m\n"
+                f"  Abs Rel  = {mono_depth['abs_rel_mean']:.4f}"
+            )
         dist.barrier()
 
     dist.destroy_process_group()
