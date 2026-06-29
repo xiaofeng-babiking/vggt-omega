@@ -565,3 +565,116 @@ class TestGetFrameIndices:
         s = _NameMapSequence(self.NAMES)
         with pytest.raises(KeyError):
             s.get_frame_indices(0, [10, 999])
+
+
+# =========================================================================== #
+# index addressing: the decode surface addresses frames by POSITION, not name
+# =========================================================================== #
+class _FakeTraj:
+    """Minimal pose-trajectory slice: wraps an ``(k, 4, 4)`` stack and returns
+    it from ``transform_matrix()`` (the only method the base getters/parse use)."""
+
+    def __init__(self, mats):
+        self._mats = mats
+
+    def transform_matrix(self):
+        return self._mats
+
+
+class _FakePoses:
+    """Position-indexable pose store mirroring the BaseSE3Trajectory indexing the
+    decode path relies on. ``[i]`` (int) -> single-frame slice; ``[idxs]``
+    (list/array) -> multi-frame slice -- without the real SE(3) machinery."""
+
+    def __init__(self, mats):
+        self._mats = list(mats)  # list of (4, 4) arrays
+
+    def __getitem__(self, key):
+        idxs = [key] if isinstance(key, (int, np.integer)) else list(key)
+        return _FakeTraj(np.stack([self._mats[i] for i in idxs], axis=0))
+
+
+class _IndexAddrSequence(BaseSequence):
+    """In-memory vendor whose frame NAMES are arbitrary strings (``"a"``, ``"b"``,
+    ``"c"``) and therefore deliberately != their positions. Pins that the decode
+    surface (get_pose / get_timestamp / parse) addresses frames by POSITION
+    (frame_index): any name resolution on these paths would raise on a
+    string-named, non-positional vendor.
+
+    Bypasses ``BaseSequence.__init__`` (no disk): sets the manifest + poses
+    directly. Only POSE + TIMESTAMP are advertised, so parse() never reaches the
+    image getters."""
+
+    _SENSOR = 0
+
+    def __init__(self):
+        mats = []
+        for k in range(3):
+            m = np.eye(4)
+            m[0, 3] = float(k)  # translation x encodes the position
+            mats.append(m)
+        self._manifest = {
+            self._SENSOR: {
+                Modality.NAME: ["a", "b", "c"],            # names != positions, not int
+                Modality.TIMESTAMP: [100.0, 200.0, 300.0],
+            }
+        }
+        self._sensor_poses = {self._SENSOR: _FakePoses(mats)}
+
+    def load_manifest(self):
+        raise NotImplementedError
+
+    def load_calibration_tree(self):
+        raise NotImplementedError
+
+    def load_sensor_poses(self):
+        raise NotImplementedError
+
+    def get_modalities(self, sensor_id):
+        return {Modality.POSE, Modality.TIMESTAMP}
+
+    def get_length(self, sensor_id):
+        return len(self._manifest[sensor_id][Modality.NAME])
+
+    def get_rgb(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_semantic_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_dynamic_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_valid_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_depth(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_depth_confidence(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_tracks(self, sensor_id):
+        raise NotImplementedError
+
+    def get_pointcloud(self, sensor_id):
+        raise NotImplementedError
+
+
+class TestIndexAddressing:
+    """The decode surface addresses frames by position, never by name."""
+
+    def test_get_pose_addresses_by_position(self):
+        seq = _IndexAddrSequence()
+        np.testing.assert_allclose(seq.get_pose(0, 0)[:3, 3], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(seq.get_pose(0, 2)[:3, 3], [2.0, 0.0, 0.0])
+
+    def test_get_timestamp_addresses_by_position(self):
+        seq = _IndexAddrSequence()
+        assert seq.get_timestamp(0, 1) == 200.0
+
+    def test_parse_addresses_by_position(self):
+        seq = _IndexAddrSequence()
+        out = seq.parse(0, [0, 2], modalities={Modality.POSE, Modality.TIMESTAMP})
+        np.testing.assert_allclose(out[Modality.TIMESTAMP], [100.0, 300.0])
+        np.testing.assert_allclose(out[Modality.POSE][:, 0, 3], [0.0, 2.0])
