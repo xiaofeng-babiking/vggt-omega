@@ -96,6 +96,12 @@ gflags.DEFINE_integer(
     "Thread workers for parallel frame loading in get_sample: -1 = auto "
     "(min(32, cores) / local ranks), 0 or 1 = serial.",
 )
+gflags.DEFINE_boolean(
+    "profile_mfu",
+    False,
+    "After the timed forward, count forward FLOPs (FlopCounterMode) and log "
+    "model-FLOPs utilization vs the A100 bf16 peak. Adds one extra forward pass.",
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -115,6 +121,31 @@ def gpu_status(tag: str) -> None:
         f"reserved={torch.cuda.memory_reserved() / 1e9:.1f}G "
         f"peak={torch.cuda.max_memory_allocated() / 1e9:.1f}G "
         f"free={free / 1e9:.1f}G / {total / 1e9:.1f}G"
+    )
+
+
+A100_BF16_PEAK = 312e12  # dense bf16 tensor-core peak FLOP/s (A100 80GB)
+
+
+def _log_mfu(model, images: torch.Tensor, infer_secs: float) -> None:
+    """Count forward FLOPs once (FlopCounterMode, FMA=2) and log throughput +
+    model-FLOPs utilization against the A100 bf16 peak.
+
+    The rate uses the CLEAN forward time ``infer_secs``; the counted pass here is
+    for FLOPs only (its own wall time carries dispatch overhead, so it is not
+    timed). FlopCounterMode tallies real mm / conv / SDPA ops, so attention's
+    S^2 term is included -- which the 2*N*D analytic shortcut would miss for
+    VGGT's alternating frame/global attention. Adds one extra forward (opt-in)."""
+    from torch.utils.flop_counter import FlopCounterMode
+
+    with FlopCounterMode(display=False) as fc, torch.inference_mode():
+        model(images)
+    flops = fc.get_total_flops()
+    logger.info(
+        f"[MFU] {flops / 1e12:.1f} TFLOP fwd / {infer_secs:.1f}s = "
+        f"{flops / infer_secs / 1e12:.1f} TFLOP/s -> "
+        f"{flops / infer_secs / A100_BF16_PEAK * 100:.1f}% of A100 bf16 "
+        f"({A100_BF16_PEAK / 1e12:.0f} TF/s peak)"
     )
 
 
@@ -314,8 +345,11 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
             f"A single {total:.0f}G GPU fits ~{fits} native-VGA frames in one pass. "
             f"Lower --num_frames (<=~{fits}) or drop --image_scale."
         )
-    logger.info(f"inference done in {time.time() - t_infer:.1f}s")
+    infer_secs = time.time() - t_infer
+    logger.info(f"inference done in {infer_secs:.1f}s")
     gpu_status("after forward")
+    if FLAGS.profile_mfu:
+        _log_mfu(model, images, infer_secs)
 
     extrinsics, intrinsics = encoding_to_camera(
         predictions["pose_enc"], predictions["images"].shape[-2:]
