@@ -36,25 +36,6 @@ from vggt_omega.datasets.utils.se3_trajectory import NumpySE3Trajectory
 H, W = 12, 16  # synthetic frame size
 _EVAL = "/jfs/guibiao/streamVGGT/data/eval"  # optional real eval root (skipped if absent)
 
-# Per-frame modalities (everything that varies per frame); the complement
-# (NAME / POINTCLOUD / INTRINSIC / EXTRINSIC) is per-sequence metadata/calibration.
-_PER_FRAME = frozenset(
-    {
-        Modality.RGB,
-        Modality.RGB_SEMANTIC_MASK,
-        Modality.RGB_INSTANCE_MASK,
-        Modality.RGB_DYNAMIC_MASK,
-        Modality.RGB_VALID_MASK,
-        Modality.DEPTH,
-        Modality.DEPTH_CONFIDENCE,
-        Modality.FLOW,
-        Modality.POSE,
-        Modality.TIMESTAMP,
-        Modality.TRACK,
-        Modality.TRACK_VISIBILITY,
-    }
-)
-
 
 def _pose_to_matrix(pose) -> np.ndarray:
     """Coerce a single-frame ``get_pose`` result to a ``(4, 4)`` c2w matrix.
@@ -228,62 +209,6 @@ class BaseSequenceContract:
         if Modality.RGB in s.get_modalities(sid):
             assert m.shape == s.get_rgb(sid, 0).shape[:2]
 
-    # -- parse (the base template) ------------------------------------------ #
-    def test_parse_stacks_in_order(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        names = self._frame_names(s, sid)[:3]
-        out = s.parse(sid, names, image_size=(10, 14))
-        for arr in out.values():
-            assert arr.shape[0] == len(names)
-        if Modality.RGB in out:
-            assert out[Modality.RGB].shape[1:] == (10, 14, 3)
-        if Modality.DEPTH in out:
-            assert out[Modality.DEPTH].shape[1:] == (10, 14)
-        if Modality.POSE in out:
-            assert out[Modality.POSE].shape[1:] == (4, 4)
-
-    def test_parse_only_returns_requested(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        if Modality.RGB not in s.get_modalities(sid):
-            pytest.skip("sensor has no RGB")
-        names = self._frame_names(s, sid)[:2]
-        out = s.parse(sid, names, modalities={Modality.RGB})
-        assert set(out.keys()) == {Modality.RGB}
-
-    def test_parse_image_dtype_float32(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        if Modality.RGB not in s.get_modalities(sid):
-            pytest.skip("sensor has no RGB")
-        names = self._frame_names(s, sid)[:2]
-        out = s.parse(sid, names, modalities={Modality.RGB}, image_dtype="float32")
-        rgb = out[Modality.RGB]
-        assert rgb.dtype == np.float32
-        assert rgb.min() >= 0.0 and rgb.max() <= 1.0
-
-    def test_parse_rejects_unavailable_modality(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        missing = _PER_FRAME - s.get_modalities(sid)
-        if not missing:
-            pytest.skip("sensor provides every per-frame modality")
-        names = self._frame_names(s, sid)[:1]
-        with pytest.raises((AssertionError, ValueError)):
-            s.parse(sid, names, modalities={next(iter(missing))})
-
-    def test_parse_drops_calibration_modalities(self):
-        # INTRINSIC / EXTRINSIC are per-sequence calibration; parse must not emit
-        # them even when the sensor advertises them (use get_intrinsic / get_extrinsic).
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        names = self._frame_names(s, sid)[:1]
-        for cal in (Modality.INTRINSIC, Modality.EXTRINSIC):
-            if cal in s.get_modalities(sid):
-                out = s.parse(sid, names, modalities={cal})
-                assert cal not in out
-
 
 # =========================================================================== #
 # TUM RGB-D
@@ -391,15 +316,6 @@ class TestTumSequence(BaseSequenceContract):
         traj = s.get_poses(sid)
         assert isinstance(traj, NumpySE3Trajectory)
         assert len(traj) == s.get_length(sid)
-
-    def test_parse_pose_matches_get_pose(self):
-        # parse's POSE block (trajectory-indexed) must agree with get_pose, in order.
-        s = self.make_sequence()
-        sid = s.get_sensors()[0]
-        names = [2, 0, 3]
-        out = s.parse(sid, names, modalities={Modality.POSE})
-        for row, name in zip(out[Modality.POSE], names):
-            np.testing.assert_allclose(row, _pose_to_matrix(s.get_pose(sid, name)), atol=1e-9)
 
     # ----- "TUM provides no X" getters all raise --------------------------- #
     def test_unsupported_getters_raise(self):
@@ -672,9 +588,3 @@ class TestIndexAddressing:
     def test_get_timestamp_addresses_by_position(self):
         seq = _IndexAddrSequence()
         assert seq.get_timestamp(0, 1) == 200.0
-
-    def test_parse_addresses_by_position(self):
-        seq = _IndexAddrSequence()
-        out = seq.parse(0, [0, 2], modalities={Modality.POSE, Modality.TIMESTAMP})
-        np.testing.assert_allclose(out[Modality.TIMESTAMP], [100.0, 300.0])
-        np.testing.assert_allclose(out[Modality.POSE][:, 0, 3], [0.0, 2.0])

@@ -1,7 +1,7 @@
 """The single, unified dataset API for VGGT-Omega training and inference.
 
-:class:`SequenceDataset` drives any :class:`BaseSequence` vendor (lazy getters +
-:meth:`parse`, one instance per *sequence*) through the per-batch dict contract the
+:class:`SequenceDataset` drives any :class:`BaseSequence` vendor (lazy getters,
+one instance per *sequence*) through the per-batch dict contract the
 training loader (:class:`ComposedDataset`) and inference expect: ``images`` /
 ``depths`` / ``extrinsics`` / ``intrinsics`` / ``cam_points`` / ``world_points`` /
 ``point_masks`` / ``ids`` ... via :meth:`get_data`, with sequence enumeration through

@@ -285,8 +285,7 @@ class TumSequence(BaseSequence):
 
     # get_pose/get_poses are overridden above; get_intrinsic / get_extrinsic are
     # inherited from BaseSequence (intrinsic from the calibration-tree node;
-    # extrinsic is identity for this single-sensor capture). parse() is inherited
-    # as the concrete template over the getters.
+    # extrinsic is identity for this single-sensor capture).
 
     @classmethod
     def discover(
