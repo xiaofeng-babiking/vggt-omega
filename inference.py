@@ -37,65 +37,39 @@ import os
 import sys
 import time
 
-import cv2
 import gflags
 import numpy as np
 import torch
-from hydra.utils import instantiate
-from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from vggt_omega import datasets as vggt_datasets
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
-from vggt_omega.datasets.dataloaders.composed_dataset import ComposedDataset
-from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
+from vggt_omega.inference_common import (
+    FLAGS,
+    DATASET_CONFIG_DIR,
+    effective_long_side,
+    unproject_depth_map_to_point_map,
+    world_to_camera_to_camera_to_world,
+    save_uint16_image,
+    write_ply,
+    load_config,
+    build_dataset,
+    resolve_frame_ids,
+    load_sample,
+    gt_from_sample,
+)
+from vggt_omega.evaluates.scene import (
+    score_camera_pose,
+    score_depth_frames,
+    depth_sums,
+    aggregate_depth_from_sums,
+    assemble_metrics,
+)
 
 logger = get_logger("vggt_omega.inference")
 
-# Per-dataset configure dir (ships tum.yaml, the default --configure target).
-DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "configures")
-
-# --- command-line flags ------------------------------------------------------
-# Inputs to locate (checkpoint, configure) plus the output/fusion knobs. The
-# dataset-loading knobs (num_frames, image_scale) live in the configure YAML's
-# `inference` block instead, since they shape what frames/resolution the dataset
-# yields and so belong with the dataset definition.
-FLAGS = gflags.FLAGS
-gflags.DEFINE_string(
-    "checkpoint",
-    "/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt",
-    "Path to the VGGT-Omega checkpoint (.pt).",
-)
-gflags.DEFINE_string(
-    "configure",
-    os.path.join(DATASET_CONFIG_DIR, "tum.yaml"),
-    "Path to the per-dataset configure (.yaml): `dataset` + `common_config` + an "
-    "`inference` block (num_frames, image_scale), loaded with OmegaConf and "
-    "instantiated like training.",
-)
-gflags.DEFINE_string(
-    "output_root",
-    "outputs",
-    "Output root directory; a per-sequence subdirectory is created under it.",
-)
-gflags.DEFINE_float(
-    "conf_percentile",
-    20.0,
-    "Drop the lowest this-percent of points (by confidence) from the fused cloud.",
-)
-gflags.DEFINE_integer(
-    "max_points",
-    5_000_000,
-    "Cap on exported point-cloud size (the fused cloud is a visualization, not scored).",
-)
-gflags.DEFINE_integer(
-    "loader_workers",
-    -1,
-    "Thread workers for parallel frame loading in get_sample: -1 = auto "
-    "(min(32, cores) / local ranks), 0 or 1 = serial.",
-)
+# --- command-line flags (inference.py-specific) ------------------------------
 gflags.DEFINE_boolean(
     "profile_mfu",
     False,
@@ -104,11 +78,6 @@ gflags.DEFINE_boolean(
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def effective_long_side(native_long: int, image_scale: float) -> int:
-    """Native long side scaled by `image_scale`, snapped to a /16 multiple (ViT-friendly)."""
-    return max(16, int(round(native_long * image_scale / 16)) * 16)
 
 
 def gpu_status(tag: str) -> None:
@@ -147,165 +116,6 @@ def _log_mfu(model, images: torch.Tensor, infer_secs: float) -> None:
         f"{flops / infer_secs / A100_BF16_PEAK * 100:.1f}% of A100 bf16 "
         f"({A100_BF16_PEAK / 1e12:.0f} TF/s peak)"
     )
-
-
-# --- geometry / IO helpers ---------------------------------------------------
-def unproject_depth_map_to_point_map(
-    depth_map: np.ndarray, extrinsic: np.ndarray, intrinsic: np.ndarray
-) -> np.ndarray:
-    """Unproject per-frame depth into a common world frame -> (S, H, W, 3).
-
-    `extrinsic` is world-to-camera (OpenCV) [R|t], so world = R^T @ (cam - t).
-    """
-    depth = depth_map[..., 0]
-    num, height, width = depth.shape
-
-    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
-    x = np.broadcast_to(x[None], (num, height, width))
-    y = np.broadcast_to(y[None], (num, height, width))
-
-    fx = intrinsic[:, 0, 0][:, None, None]
-    fy = intrinsic[:, 1, 1][:, None, None]
-    cx = intrinsic[:, 0, 2][:, None, None]
-    cy = intrinsic[:, 1, 2][:, None, None]
-
-    camera_points = np.stack(
-        [(x - cx) / fx * depth, (y - cy) / fy * depth, depth], axis=-1
-    )
-    rotation = extrinsic[:, :3, :3]
-    translation = extrinsic[:, :3, 3]
-    return np.einsum(
-        "sij,shwj->shwi",
-        np.transpose(rotation, (0, 2, 1)),
-        camera_points - translation[:, None, None, :],
-    )
-
-
-def world_to_camera_to_camera_to_world(w2c: np.ndarray) -> np.ndarray:
-    """Invert world-to-camera ``(S, 3, 4)`` -> camera-to-world ``(S, 4, 4)``.
-
-    The translation column of the result is the camera centre in world coords --
-    the trajectory positions :class:`CameraPoseMetric` consumes.
-    """
-    rotation = w2c[:, :3, :3]
-    translation = w2c[:, :3, 3]
-    rot_c2w = np.transpose(rotation, (0, 2, 1))
-    trans_c2w = -np.einsum("sij,sj->si", rot_c2w, translation)
-    c2w = np.tile(np.eye(4), (w2c.shape[0], 1, 1))
-    c2w[:, :3, :3] = rot_c2w
-    c2w[:, :3, 3] = trans_c2w
-    return c2w
-
-
-def save_uint16_image(array: np.ndarray, scale: float, path: str) -> None:
-    """Scale a float map and write it as a single-channel 16-bit PNG."""
-    scaled = np.rint(array.astype(np.float64) * scale)
-    scaled = np.clip(scaled, 0, 65535).astype(np.uint16)
-    cv2.imwrite(path, scaled)
-
-
-def write_ply(path: str, points: np.ndarray, colors: np.ndarray) -> None:
-    """Write a colored point cloud as a binary little-endian PLY."""
-    n = points.shape[0]
-    header = (
-        "ply\n"
-        "format binary_little_endian 1.0\n"
-        f"element vertex {n}\n"
-        "property float x\nproperty float y\nproperty float z\n"
-        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-        "end_header\n"
-    )
-    vertex = np.empty(
-        n,
-        dtype=np.dtype(
-            [
-                ("x", "<f4"),
-                ("y", "<f4"),
-                ("z", "<f4"),
-                ("red", "u1"),
-                ("green", "u1"),
-                ("blue", "u1"),
-            ]
-        ),
-    )
-    vertex["x"], vertex["y"], vertex["z"] = points[:, 0], points[:, 1], points[:, 2]
-    vertex["red"], vertex["green"], vertex["blue"] = (
-        colors[:, 0],
-        colors[:, 1],
-        colors[:, 2],
-    )
-    with open(path, "wb") as f:
-        f.write(header.encode("ascii"))
-        f.write(vertex.tobytes())
-
-
-# --- 1. Load the dataset (RGB + GT depth/poses/intrinsics) --------------------
-def load_config():
-    """Load the per-dataset configure (.yaml) with OmegaConf. It must define
-    ``dataset`` + ``common_config`` (instantiated like training) and an
-    ``inference`` block with ``num_frames`` and ``image_scale`` (the dataset
-    sampling / resolution knobs). Output/fusion knobs are command-line flags."""
-    return OmegaConf.load(FLAGS.configure)
-
-
-def build_dataset(cfg) -> ComposedDataset:
-    """Instantiate the *training* ComposedDataset from the per-dataset configure.
-
-    The configure file (loaded by :func:`load_config`) supplies ``dataset`` and
-    ``common_config`` verbatim, with the eval overrides (training off, ordered
-    ids, deterministic resize, no augmentation) already baked into the YAML and
-    instantiated exactly as training does -- so inference cannot silently drift.
-    The target long side is the data's NATIVE long side x ``inference.image_scale``,
-    read from the dataset itself rather than hardcoded.
-    """
-    dataset = instantiate(cfg.dataset, common_config=cfg.common_config, _recursive_=False)
-    native_h, native_w = dataset.native_image_size()
-    dataset.set_img_size(
-        effective_long_side(max(native_h, native_w), cfg.inference.image_scale)
-    )
-    return dataset
-
-
-def resolve_frame_ids(dataset: ComposedDataset, seq_index: int, num_frames: int) -> np.ndarray:
-    """Ordered frame ids for one sequence: all frames (``num_frames<=0``) or evenly spaced."""
-    num_available = dataset.sequence_num_frames(seq_index)
-    if num_frames <= 0 or num_frames >= num_available:
-        return np.arange(num_available)  # ALL frames, ordered
-    return np.linspace(0, num_available - 1, num_frames).round().astype(int)
-
-
-def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:
-    """Training-identical tensorized sample for ``frame_ids`` of one sequence
-    (images ``(S,3,H,W)`` in ``[0,1]`` + the full GT modality set). Frames load
-    on ``--loader_workers`` threads (-1 = auto, <=1 = serial)."""
-    t_load = time.time()
-    native_h, native_w = dataset.native_image_size(seq_index)
-    aspect_ratio = min(native_h, native_w) / max(native_h, native_w)
-    num_workers = None if FLAGS.loader_workers < 0 else FLAGS.loader_workers
-    sample = dataset.get_sample(
-        seq_index, ids=frame_ids, aspect_ratio=aspect_ratio, num_workers=num_workers
-    )
-    logger.info(f"loaded {len(frame_ids)} frames in {time.time() - t_load:.1f}s")
-    return sample
-
-
-def gt_from_sample(sample: dict) -> dict:
-    """Pull the ground-truth arrays inference scores against (eval semantics
-    unchanged: GT depth + extrinsics; predicted intrinsics drive unprojection).
-
-    ``modalities`` (the vendor's advertised GT set) rides along so the metrics
-    stage can skip scores whose GT does not exist for this dataset — e.g. NYU
-    ships no poses and DL3DV no depth; their placeholder arrays must not be
-    scored as ground truth."""
-    return {
-        "gt_depth": sample["depths"]
-        .numpy()
-        .astype(np.float32),  # (S, H, W) m, 0=invalid
-        "gt_extrinsics": sample["extrinsics"]
-        .numpy()
-        .astype(np.float32),  # (S, 3, 4) world->cam
-        "modalities": list(sample.get("modalities", [])),
-    }
 
 
 # --- 2. Model + inference ----------------------------------------------------
@@ -459,54 +269,26 @@ def dump_and_eval(
     ply_path = os.path.join(output_dir, "pointcloud.ply")
     write_ply(ply_path, points, colors)
 
-    # --- 5. Evaluate against the dataset's advertised GT modalities --------------
-    # Vendors declare which arrays are real ground truth (sample["modalities"]);
-    # placeholder arrays (NYU's identity poses, DL3DV's zero depth) are never
-    # scored. A metric whose GT is absent is reported as null in metrics.json.
+    # --- 5. Evaluate against the dataset's advertised GT modalities (shared path) -
     metrics_dir = os.path.join(output_dir, "metrics")
     os.makedirs(metrics_dir, exist_ok=True)
     modalities = set(loaded.get("modalities") or [])
 
-    # 5a. Camera pose: ATE / RPE on camera-to-world trajectories (Sim3-aligned,
-    # since VGGT poses are metric only up to a global scale). Needs EXTRINSICS
-    # GT and >= 2 poses (RPE is over relative motions).
-    camera_pose_metrics = None
-    if "extrinsics" in modalities and num_f >= 2:
-        gt_c2w = world_to_camera_to_camera_to_world(gt_extrinsics)
-        pred_c2w = world_to_camera_to_camera_to_world(pred_extrinsics)
-        camera_pose_metrics = CameraPoseMetric(gt_c2w, pred_c2w, align_scale=True).run(
-            vis_path=os.path.join(metrics_dir, "camera_pose")
-        )
+    camera_pose_metrics = score_camera_pose(
+        world_to_camera_to_camera_to_world(gt_extrinsics),
+        world_to_camera_to_camera_to_world(pred_extrinsics),
+        modalities=modalities,
+        num_frames=num_f,
+        vis_path=os.path.join(metrics_dir, "camera_pose"),
+    )
+    mono_depth_metrics = aggregate_depth_from_sums(
+        *depth_sums(score_depth_frames(gt_depth, pred_depth_2d, modalities=modalities))
+    )
 
-    # 5b. Mono depth: per-frame Abs Rel / delta (per-image median alignment),
-    # aggregated to the headline means across frames. Needs DEPTH GT; frames
-    # without a single valid GT pixel (possible with sparse LiDAR) are skipped
-    # rather than crashing the metric.
-    mono_depth_metrics = None
-    if "depths" in modalities:
-        per_frame_depth = []
-        for i in tqdm(range(num_f), desc="mono-depth eval", unit="frame"):
-            if not (gt_depth[i] > 0).any():
-                continue
-            res = MonoDepthMetric(gt_depth[i], pred_depth_2d[i], align="median").run()
-            per_frame_depth.append(res)
-        if per_frame_depth:
-            mono_depth_metrics = {
-                "abs_rel_mean": float(np.mean([d["abs_rel"]["mean"] for d in per_frame_depth])),
-                "abs_rel_rmse": float(np.mean([d["abs_rel"]["rmse"] for d in per_frame_depth])),
-                "delta1": float(np.mean([d["delta"]["delta1"] for d in per_frame_depth])),
-                "delta2": float(np.mean([d["delta"]["delta2"] for d in per_frame_depth])),
-                "delta3": float(np.mean([d["delta"]["delta3"] for d in per_frame_depth])),
-                "num_frames": len(per_frame_depth),
-            }
-
-    all_metrics = {
-        "scene": seq_name,
-        "num_frames": int(num_f),
-        "resolution": [int(height), int(width)],
-        "camera_pose": camera_pose_metrics,
-        "mono_depth": mono_depth_metrics,
-    }
+    all_metrics = assemble_metrics(
+        seq_name, num_f, camera_pose_metrics, mono_depth_metrics,
+        resolution=[int(height), int(width)],
+    )
     with open(os.path.join(metrics_dir, "metrics.json"), "w") as f:
         json.dump(all_metrics, f, indent=2)
 
