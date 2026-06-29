@@ -47,8 +47,6 @@ from vggt_omega.utils.logger import get_logger
 from vggt_omega.utils.pose_enc import encoding_to_camera
 from vggt_omega.inference_common import (
     FLAGS,
-    DATASET_CONFIG_DIR,
-    effective_long_side,
     unproject_depth_map_to_point_map,
     world_to_camera_to_camera_to_world,
     save_uint16_image,
