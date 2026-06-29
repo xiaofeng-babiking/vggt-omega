@@ -164,7 +164,7 @@ class BaseSequence(ABC):
             return float(frame_index)
         return float(timestamps[frame_index])
 
-    # -- per-frame getters: (sensor_id, frame_name) ---------------------------- #
+    # -- per-frame getters: (sensor_id, frame_index) --------------------------- #
     @abstractmethod
     def get_rgb(self, sensor_id: Union[int, str], frame_index: int) -> np.ndarray:
         """Get RGB image by sensor_id and frame position."""
@@ -323,7 +323,7 @@ class BaseSequence(ABC):
         ``get_rgb_dynamic_mask`` / ``get_rgb_valid_mask`` / ``get_depth_confidence``),
         resized to ``image_size`` and cast per ``image_dtype``; POSE and TIMESTAMP
         are read from the precomputed ``_sensor_poses`` trajectory and the manifest.
-        Each modality is stacked along axis 0 in ``frame_names`` order. Vendors
+        Each modality is stacked along axis 0 in ``frame_indices`` order. Vendors
         implement only the getters + :meth:`get_modalities` + the ``load_*`` loaders;
         they need not override ``parse``.
 
