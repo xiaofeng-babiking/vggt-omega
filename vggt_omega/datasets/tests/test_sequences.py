@@ -114,6 +114,17 @@ class BaseSequenceContract:
         for sid in s.get_sensors():
             assert len(self._frame_names(s, sid)) == s.get_length(sid)
 
+    def test_get_frame_indices_agrees_with_singular(self):
+        # The bulk name->index find/map must match the singular lookup elementwise
+        # and follow the *query* order (here reversed to exercise ordering).
+        s = self.make_sequence()
+        for sid in s.get_sensors():
+            names = self._frame_names(s, sid)
+            subset = list(reversed(names))[: max(1, len(names) // 2)]
+            assert s.get_frame_indices(sid, subset) == [
+                s.get_frame_index(sid, n) for n in subset
+            ]
+
     # -- per-frame getters honour advertised modalities --------------------- #
     def test_rgb_shape(self):
         s = self.make_sequence()
@@ -463,3 +474,94 @@ class TestTumSequence(BaseSequenceContract):
             np.testing.assert_allclose(
                 _pose_to_matrix(s.get_pose(sid, k))[:3, 3], [k, 0, 0], atol=1e-4
             )
+
+
+# =========================================================================== #
+# frame-name -> frame-index find/map (get_frame_index / get_frame_indices)
+# =========================================================================== #
+class _NameMapSequence(BaseSequence):
+    """Minimal vendor exposing only a NAME manifest.
+
+    Frame names are deliberately *not* equal to their positions, so the
+    name->index find/map is exercised in the general case (the singular
+    ``.index()`` lookup conflates the two when names happen to be ``0..n-1``).
+    Only ``_manifest[sid][Modality.NAME]`` is touched by the index lookups, so
+    the on-disk ``BaseSequence.__init__`` and the decode getters are skipped.
+    """
+
+    def __init__(self, names, sensor_id=0):
+        self._manifest = {sensor_id: {Modality.NAME: list(names)}}
+
+    def load_manifest(self):
+        raise NotImplementedError
+
+    def load_calibration_tree(self):
+        raise NotImplementedError
+
+    def load_sensor_poses(self):
+        raise NotImplementedError
+
+    def get_modalities(self, sensor_id):
+        raise NotImplementedError
+
+    def get_length(self, sensor_id):
+        raise NotImplementedError
+
+    def get_rgb(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_semantic_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_dynamic_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_valid_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_depth(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_depth_confidence(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_tracks(self, sensor_id):
+        raise NotImplementedError
+
+    def get_pointcloud(self, sensor_id):
+        raise NotImplementedError
+
+
+class TestGetFrameIndices:
+    """``get_frame_indices`` maps a subset of frame names to their positions in
+    the sensor's frame-sorted NAME list, preserving the *subset* order."""
+
+    NAMES = [10, 20, 30, 40, 50]  # non-contiguous: name != position
+
+    def test_maps_subset_to_positions_in_subset_order(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, [30, 10, 50]) == [2, 0, 4]
+
+    def test_preserves_repeated_names(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, [20, 20, 40]) == [1, 1, 3]
+
+    def test_empty_subset_returns_empty(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, []) == []
+
+    def test_full_list_maps_to_identity_range(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, self.NAMES) == list(range(len(self.NAMES)))
+
+    def test_agrees_with_singular_get_frame_index(self):
+        s = _NameMapSequence(self.NAMES)
+        subset = [50, 30, 10, 40]
+        assert s.get_frame_indices(0, subset) == [
+            s.get_frame_index(0, n) for n in subset
+        ]
+
+    def test_unknown_name_raises(self):
+        s = _NameMapSequence(self.NAMES)
+        with pytest.raises(KeyError):
+            s.get_frame_indices(0, [10, 999])
