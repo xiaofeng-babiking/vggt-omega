@@ -17,6 +17,10 @@ def test_effective_long_side_snaps_to_16():
     assert ic.effective_long_side(10, 0.1) == 16     # floor clamp to 16
 
 
+def test_logger_defined():
+    assert hasattr(ic, "logger")
+
+
 def test_w2c_to_c2w_roundtrip():
     # camera at world origin looking along +z, translated: w2c [R|t], t = -R @ C.
     w2c = np.tile(np.hstack([np.eye(3), np.array([[1.0], [2.0], [3.0]])]), (2, 1, 1))

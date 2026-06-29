@@ -15,9 +15,12 @@ from omegaconf import OmegaConf
 
 from vggt_omega import datasets as vggt_datasets
 from vggt_omega.datasets.dataloaders.composed_dataset import ComposedDataset
+from vggt_omega.utils.logger import get_logger
 
 # Per-dataset configure dir (ships tum.yaml, the default --configure target).
 DATASET_CONFIG_DIR = os.path.join(os.path.dirname(vggt_datasets.__file__), "configures")
+
+logger = get_logger("vggt_omega.inference_common")
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_string(
