@@ -10,6 +10,7 @@ log "Target: $DEST_DIR"
 
 # Resolution: 1080 (34GB), 720 (16GB), or 540 (9GB). Default 1080.
 RES="${RES:-1080}"
+# huggingface.co URLs are auto-rerouted to $HF_ENDPOINT (default hf-mirror.com) by fetch().
 BASE="https://huggingface.co/datasets/phuang17/MVS-Synth/resolve/main"
 
 log "Fetching GTAV_${RES}.tar.gz"

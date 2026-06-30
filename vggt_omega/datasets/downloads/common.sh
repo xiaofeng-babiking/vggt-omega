@@ -5,8 +5,9 @@
 #
 # Convention shared by every script here:
 #   * The first positional arg (or the $DEST env var) is the target directory.
-#   * Default target is $DATA_ROOT/<dataset>, with DATA_ROOT defaulting to
-#     /jfs/Data_4DFF/train_data (matching the *_DIR paths in datasets/config/*.yaml).
+#   * Default target is $DOWNLOAD_ROOT/<dataset>, with DOWNLOAD_ROOT defaulting
+#     to /ipfs/babiking/datasets/3DR (the legacy DATA_ROOT var still works and
+#     overrides DOWNLOAD_ROOT).
 #   * Datasets that need a license / signup / gated-HF approval do NOT guess a
 #     URL: they print the exact manual steps and exit non-zero so nothing
 #     silently downloads a broken file.
@@ -22,7 +23,29 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-DATA_ROOT="${DATA_ROOT:-/jfs/Data_4DFF/train_data}"
+# Root directory under which every dataset is stored. Running e.g.
+# ./download_co3d.sh with no args puts data in $DOWNLOAD_ROOT/co3d (see
+# resolve_dest below). Override per-invocation: DOWNLOAD_ROOT=/path ./download_*.sh
+DOWNLOAD_ROOT="${DOWNLOAD_ROOT:-/ipfs/babiking/datasets/3DR}"
+# DATA_ROOT is the legacy name and now just defaults to DOWNLOAD_ROOT; kept so
+# existing overrides (DATA_ROOT=...) still work.
+DATA_ROOT="${DATA_ROOT:-$DOWNLOAD_ROOT}"
+
+# HuggingFace endpoint. Defaults to the China mirror (hf-mirror.com) so HF-backed
+# downloads work fast/reliably from mainland China. This single var is honored by
+# huggingface_hub / huggingface-cli (megasynth, wildrgbd, uco3d --use_huggingface)
+# AND by fetch() below, which rewrites direct huggingface.co URLs (mvs_synth) to it.
+# Override to use the official site:  export HF_ENDPOINT=https://huggingface.co
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+
+# PyPI index for every uv operation (uv sync / uv run / uv pip) across all the
+# per-dataset envs below. Defaults to the Tsinghua mirror so package resolution
+# is fast/reliable from mainland China. uv reads UV_DEFAULT_INDEX (its preferred
+# var) and the legacy UV_INDEX_URL; we set both for compatibility across uv
+# versions. Override to use upstream PyPI:
+#   export UV_DEFAULT_INDEX=https://pypi.org/simple
+export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+export UV_INDEX_URL="${UV_INDEX_URL:-$UV_DEFAULT_INDEX}"
 
 # Directory holding this file (downloads/), so env paths resolve regardless of cwd.
 DOWNLOADS_DIR="${DOWNLOADS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -59,6 +82,16 @@ require_cmd() {
 # verifies fine. Certificate verification stays ON in both paths.
 fetch() {
     local url="$1" out="$2"
+    # Route huggingface.co URLs through the configured HF_ENDPOINT mirror
+    # (defaults to hf-mirror.com). Leaves all other hosts untouched.
+    if [ -n "${HF_ENDPOINT:-}" ] && [ "$HF_ENDPOINT" != "https://huggingface.co" ]; then
+        case "$url" in
+            https://huggingface.co/*)
+                url="${HF_ENDPOINT%/}/${url#https://huggingface.co/}"
+                warn "Using HF mirror: $url"
+                ;;
+        esac
+    fi
     if command -v wget >/dev/null 2>&1; then
         wget --continue --tries=5 --timeout=60 -O "$out" "$url" && return 0
         command -v curl >/dev/null 2>&1 && warn "wget failed for $url -- falling back to curl"

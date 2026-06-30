@@ -10,10 +10,10 @@ two folders by how each one is accessed:
 ## Usage
 
 ```bash
-# Default target dir is $DATA_ROOT/<dataset>  (DATA_ROOT defaults to /jfs/Data_4DFF/train_data)
-./open/download_co3d.sh                        # -> /jfs/Data_4DFF/train_data/co3d
-./open/download_co3d.sh /my/path/co3d          # explicit target
-DATA_ROOT=/data ./open/download_megadepth.sh   # override the root for all scripts
+# Default target dir is $DOWNLOAD_ROOT/<dataset>  (DOWNLOAD_ROOT defaults to /ipfs/babiking/datasets/3DR)
+./open/download_co3d.sh                            # -> /ipfs/babiking/datasets/3DR/co3d
+./open/download_co3d.sh /my/path/co3d              # explicit target
+DOWNLOAD_ROOT=/data ./open/download_megadepth.sh   # override the root for all scripts (legacy DATA_ROOT also works)
 ./gated/download_scannet.sh                    # gated: prints the manual steps, exits non-zero
 ```
 
