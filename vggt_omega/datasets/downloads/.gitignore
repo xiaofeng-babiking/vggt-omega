@@ -14,4 +14,6 @@ envs/*/.venv/
 **/_midair_repo/
 **/_dl3dv_repo/
 **/BEHAVIOR-1K/
+# NFS "silly-rename" phantoms (.nfsXXXX) left when an open file is moved/deleted.
+.nfs*
 # Keep uv.lock files committed for reproducibility (do NOT ignore them).
