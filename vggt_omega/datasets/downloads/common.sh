@@ -125,12 +125,16 @@ uv_tool() {
     uv run --project "$env_dir" --python "$UV_PYTHON" -- "$@"
 }
 
-# `uv pip install` into the dataset venv (for editable installs of cloned repos
-# that ship their own setup.py/pyproject, e.g. uCO3D). Usage: uv_pip install -e <repo>
+# `uv pip` into the dataset venv (for editable installs of cloned repos that ship
+# their own setup.py/pyproject, e.g. uCO3D). NOTE: unlike `uv sync`/`uv run`,
+# `uv pip` does NOT locate the env from `--project`; it resolves it from
+# VIRTUAL_ENV (or an active venv / `--python <interpreter-path>`). So we point
+# VIRTUAL_ENV at the env's .venv (created by uv_sync) and pass the pip subcommand
+# verbatim. Usage: uv_pip install -e <repo>
 uv_pip() {
     require_cmd uv "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
     local env_dir; env_dir="$(uv_env_dir)"
-    uv pip install --project "$env_dir" --python "$UV_PYTHON" "$@"
+    VIRTUAL_ENV="$env_dir/.venv" uv pip "$@"
 }
 
 # huggingface-cli download wrapper for ungated public datasets, run inside the
