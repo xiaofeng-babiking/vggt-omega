@@ -65,7 +65,7 @@ dirs and runtime-cloned upstream repos (`_*_repo/`) are git-ignored; the
 `pyproject.toml` + `uv.lock` are committed.
 
 Datasets with **no Python dependency** (pure `wget`/`curl`: megadepth, replica,
-eden, paralleldomain4d, unrealstereo4k, vkitti, tum, seven_scenes, mvs_synth, plus the
+eden, paralleldomain4d, unrealstereo4k, vkitti, tum, seven_scenes, mvs_synth, mipnerf360, plus the
 manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 `gsutil`-based waymo) have **no** `envs/` entry. `habitat` is special:
 `habitat-sim` is conda-only (not on PyPI), so that script uses `$HABITAT_PYTHON`
@@ -90,6 +90,7 @@ manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 | `open/download_vkitti.sh` | NAVER LABS direct wget | Open (CC BY-NC-SA) |
 | `open/download_tum.sh` | TUM CVG per-sequence `.tgz` (direct wget) | Open |
 | `open/download_seven_scenes.sh` | Microsoft CDN per-scene `.zip` (direct wget) | Open |
+| `open/download_mipnerf360.sh` | Google Research GCS `.zip` (direct wget) | Open |
 | `open/download_tartanair.sh` | `tartanair` pkg (uv env) | Open |
 | `open/download_tartanground.sh` | `tartanair` pkg (uv env) | Open |
 | `open/download_wildrgbd.sh` | repo `download.py` (HF, uv env) | Open |
