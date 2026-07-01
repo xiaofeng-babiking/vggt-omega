@@ -20,8 +20,8 @@ ta.init(root)
 ta.download(
     env=[],                                   # [] = all environments
     difficulty=['easy', 'hard'],
-    modality=['image', 'depth', 'seg', 'pose'],
-    camera_name=['lcam_front'],
+    modality=['image', 'depth', 'seg'],       # 'pose' is not a modality;
+    camera_name=['lcam_front'],               # per-frame poses (pose_lcam_front.txt) come automatically
     unzip=True,
 )
 PY
