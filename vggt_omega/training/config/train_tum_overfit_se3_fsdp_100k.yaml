@@ -1,0 +1,128 @@
+# TUM overfit, 100k steps, FSDP2 — the se3_overfit recipe rerun under sharding.
+#
+#   .venv/bin/torchrun --standalone --nproc_per_node=8 train.py \
+#       --config vggt_omega/training/config/train_tum_overfit_se3_fsdp_100k.yaml \
+#       --out_root outputs --run_name tum_overfit_se3_fsdp_100k
+#
+# Purpose:
+#   Long FSDP companion to outputs/tum_overfit_se3_30k (DDP, 30k). The ONLY
+#   intended differences from train_tum_overfit_se3.yaml are:
+#     (1) optim.parallel: ddp -> fsdp  (+ the top-level fsdp: block);
+#     (2) run.max_steps: 30000 -> 100000  (intervals rescaled proportionally).
+#   Everything else — lr/wd/betas/warmup, the camera+depth-only loss, the TUM
+#   overfit set, max_img_per_gpu, the dynamic SE(3) [1,24] frame window — is held
+#   identical so the comparison isolates {DDP,30k} vs {FSDP,100k}.
+#
+# Comparison caveat: the warmup-cosine LR schedule is computed over max_steps, so
+# warmup is 1500 steps @30k vs 5000 steps @100k and the cosine decays to 0 at a
+# different step. The two loss curves therefore do NOT overlay step-for-step; read
+# them as "final converged quality + throughput/memory", not a per-step diff.
+# (See train_smoke_fsdp.yaml for the 20-step FSDP smoke this is scaled up from.)
+
+run:
+  output_dir: outputs/tum_overfit_se3_fsdp_100k  # train.py overrides with --out_root/--run_name
+  max_steps: 100000
+  log_interval: 50                      # ~2000 console/TB log points over the run
+  img_log_interval: 1000
+  val_interval: 5000                    # rank-0 TUM ATE/abs_rel every 5k steps (20 val points)
+  ckpt_interval: 5000                   # keep_last 3 -> <=3 pairs on disk (~41 GB peak)
+  keep_last: 3
+  seed: 42
+
+optim:
+  parallel: fsdp             # ddp (default) | fsdp  <-- the change vs train_tum_overfit_se3.yaml
+  # 2e-4 is the paper's 128-GPU peak; high for an 8-GPU fine-tune off the
+  # pretrained checkpoint. Warmup (5% -> 5000 steps @100k) ramps in; if early
+  # train/loss_camera spikes badly, drop to ~5e-5.
+  lr: 2.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  grad_compression: bf16                # NOTE: a DDP comm hook; INERT under FSDP
+                                        # (the grad-reduce dtype is fsdp.reduce_dtype below).
+                                        # Kept only for visual parity with the DDP config.
+  fused: true                           # fused AdamW on CUDA
+
+fsdp:
+  reshard_after_forward: true
+  param_dtype: "none"      # model heads enforce fp32 LayerNorm internally; don't cast params via FSDP
+  reduce_dtype: bfloat16   # bf16 gradient reduction (the FSDP analogue of grad_compression: bf16)
+  hybrid_shard: false      # single node -> full shard over all 8 GPUs (set true for multi-node)
+  shard_size: null         # null -> LOCAL_WORLD_SIZE (gpus per node)
+  cpu_offload: false       # 1B params shard comfortably on 80 GB A100s; no offload needed
+
+loss:
+  # Camera + mono-depth only (experiment scope). point off: TUM world-points are
+  # GT-depth reprojected through GT-pose (not independent GT). match off: tracks
+  # removed (9a740c9). camera weighted 5x per the paper recipe.
+  weights: {camera: 5.0, depth: 1.0, point: 0.0, match: 0.0}
+  alpha: 0.2
+  temperature: 1.0
+
+model:
+  embed_dim: 1024
+  patch_size: 16
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
+  gradient_checkpointing: true
+
+val:
+  configures:
+    - vggt_omega/datasets/configures/tum.yaml   # corrected post-reorg path (was config/)
+  num_frames: 10
+  max_sequences: 2
+
+data:
+  train:
+    _target_: vggt_omega.datasets.dataloaders.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 8
+    max_img_per_gpu: 24
+    shuffle: false            # use inside_random instead; avoids large-dict shuffle OOM
+    pin_memory: true
+    common_config:
+      img_size: 512
+      patch_size: 16
+      samples_per_epoch: 10000   # virtual epoch size -> avoids frequent loader rebuilds
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: false          # track_util removed (9a740c9); true would raise
+      track_num: 1024
+      track_neg_ratio: 0.5
+      training: true
+      inside_random: true        # random [start,end] window per sample (dynamic)
+      rescale: true
+      rescale_aug: true
+      landscape_check: false
+      debug: false
+      get_nearby: true
+      load_depth: true
+      # Dynamic SE(3) frame window: each batch draws a random frame count in
+      # [1,24]; SequenceDataset SE(3)-arc-length samples that many frames over a
+      # random [start,end] window (density follows body-twist motion).
+      img_nums: [1, 24]
+      max_img_per_gpu: 24
+      allow_duplicate_img: true
+      repeat_batch: false
+      augs:
+        cojitter: true
+        cojitter_ratio: 0.3
+        scales: [0.8, 1.2]
+        aspects: [0.33, 1.0]
+        color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+        gray_scale: true
+        gau_blur: false
+    dataset:
+      _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+          sequence_cls:
+            _target_: hydra.utils.get_class
+            path: vggt_omega.datasets.sequences.tum.TumSequence
+          split: train
+          # All 8 TUM sequences under the eval root = the (small) overfit set.
+          data_root: ${oc.env:VGGT_EVAL_ROOT,/jfs/guibiao/streamVGGT/data/eval}/tum
+          sequences: ["*"]
+          min_num_images: 24
+          sequence_kwargs:
+            rgbd_sync_diff: 0.02
+            depth_scale: 5000.0
