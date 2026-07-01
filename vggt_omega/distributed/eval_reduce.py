@@ -8,15 +8,21 @@ import torch
 import torch.distributed as dist
 
 
-def reduce_depth_means(per_frame_metrics: list[dict], keys: list[str], group) -> dict:
-    """Frame-count-weighted mean of each key across all ranks."""
-    local_n = len(per_frame_metrics)
-    sums = {k: float(sum(d[k] for d in per_frame_metrics)) for k in keys}
+def reduce_depth(per_frame_local: list[dict], group) -> dict | None:
+    """Frame-weighted mono-depth means across ranks: sum each depth key + the
+    scored-frame count, all-reduce, then aggregate to the single-GPU schema via
+    the shared scene aggregator. Every rank returns the same dict (or None if no
+    rank scored a frame), so uneven shards yield exactly the single-GPU mean."""
+    from vggt_omega.evaluates.scene import depth_sums, aggregate_depth_from_sums
+
+    sums, count = depth_sums(per_frame_local)
+    keys = list(sums.keys())
     device = "cuda" if dist.get_backend(group) == "nccl" else "cpu"
-    packed = torch.tensor([float(local_n)] + [sums[k] for k in keys], device=device)
+    packed = torch.tensor([float(count)] + [sums[k] for k in keys], device=device)
     dist.all_reduce(packed, op=dist.ReduceOp.SUM, group=group)
-    total_n = packed[0].item()
-    return {k: (packed[i + 1].item() / total_n if total_n > 0 else 0.0) for i, k in enumerate(keys)}
+    total = int(round(packed[0].item()))
+    reduced_sums = {k: packed[i + 1].item() for i, k in enumerate(keys)}
+    return aggregate_depth_from_sums(reduced_sums, total)
 
 
 def gather_pose_enc_to_rank0(pose_enc_local: torch.Tensor, group) -> torch.Tensor | None:

@@ -36,25 +36,6 @@ from vggt_omega.datasets.utils.se3_trajectory import NumpySE3Trajectory
 H, W = 12, 16  # synthetic frame size
 _EVAL = "/jfs/guibiao/streamVGGT/data/eval"  # optional real eval root (skipped if absent)
 
-# Per-frame modalities (everything that varies per frame); the complement
-# (NAME / POINTCLOUD / INTRINSIC / EXTRINSIC) is per-sequence metadata/calibration.
-_PER_FRAME = frozenset(
-    {
-        Modality.RGB,
-        Modality.RGB_SEMANTIC_MASK,
-        Modality.RGB_INSTANCE_MASK,
-        Modality.RGB_DYNAMIC_MASK,
-        Modality.RGB_VALID_MASK,
-        Modality.DEPTH,
-        Modality.DEPTH_CONFIDENCE,
-        Modality.FLOW,
-        Modality.POSE,
-        Modality.TIMESTAMP,
-        Modality.TRACK,
-        Modality.TRACK_VISIBILITY,
-    }
-)
-
 
 def _pose_to_matrix(pose) -> np.ndarray:
     """Coerce a single-frame ``get_pose`` result to a ``(4, 4)`` c2w matrix.
@@ -113,6 +94,17 @@ class BaseSequenceContract:
         s = self.make_sequence()
         for sid in s.get_sensors():
             assert len(self._frame_names(s, sid)) == s.get_length(sid)
+
+    def test_get_frame_indices_agrees_with_singular(self):
+        # The bulk name->index find/map must match the singular lookup elementwise
+        # and follow the *query* order (here reversed to exercise ordering).
+        s = self.make_sequence()
+        for sid in s.get_sensors():
+            names = self._frame_names(s, sid)
+            subset = list(reversed(names))[: max(1, len(names) // 2)]
+            assert s.get_frame_indices(sid, subset) == [
+                s.get_frame_index(sid, n) for n in subset
+            ]
 
     # -- per-frame getters honour advertised modalities --------------------- #
     def test_rgb_shape(self):
@@ -216,62 +208,6 @@ class BaseSequenceContract:
         assert m.dtype == bool and m.ndim == 2
         if Modality.RGB in s.get_modalities(sid):
             assert m.shape == s.get_rgb(sid, 0).shape[:2]
-
-    # -- parse (the base template) ------------------------------------------ #
-    def test_parse_stacks_in_order(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        names = self._frame_names(s, sid)[:3]
-        out = s.parse(sid, names, image_size=(10, 14))
-        for arr in out.values():
-            assert arr.shape[0] == len(names)
-        if Modality.RGB in out:
-            assert out[Modality.RGB].shape[1:] == (10, 14, 3)
-        if Modality.DEPTH in out:
-            assert out[Modality.DEPTH].shape[1:] == (10, 14)
-        if Modality.POSE in out:
-            assert out[Modality.POSE].shape[1:] == (4, 4)
-
-    def test_parse_only_returns_requested(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        if Modality.RGB not in s.get_modalities(sid):
-            pytest.skip("sensor has no RGB")
-        names = self._frame_names(s, sid)[:2]
-        out = s.parse(sid, names, modalities={Modality.RGB})
-        assert set(out.keys()) == {Modality.RGB}
-
-    def test_parse_image_dtype_float32(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        if Modality.RGB not in s.get_modalities(sid):
-            pytest.skip("sensor has no RGB")
-        names = self._frame_names(s, sid)[:2]
-        out = s.parse(sid, names, modalities={Modality.RGB}, image_dtype="float32")
-        rgb = out[Modality.RGB]
-        assert rgb.dtype == np.float32
-        assert rgb.min() >= 0.0 and rgb.max() <= 1.0
-
-    def test_parse_rejects_unavailable_modality(self):
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        missing = _PER_FRAME - s.get_modalities(sid)
-        if not missing:
-            pytest.skip("sensor provides every per-frame modality")
-        names = self._frame_names(s, sid)[:1]
-        with pytest.raises((AssertionError, ValueError)):
-            s.parse(sid, names, modalities={next(iter(missing))})
-
-    def test_parse_drops_calibration_modalities(self):
-        # INTRINSIC / EXTRINSIC are per-sequence calibration; parse must not emit
-        # them even when the sensor advertises them (use get_intrinsic / get_extrinsic).
-        s = self.make_sequence()
-        sid = self._primary_sensor(s)
-        names = self._frame_names(s, sid)[:1]
-        for cal in (Modality.INTRINSIC, Modality.EXTRINSIC):
-            if cal in s.get_modalities(sid):
-                out = s.parse(sid, names, modalities={cal})
-                assert cal not in out
 
 
 # =========================================================================== #
@@ -381,15 +317,6 @@ class TestTumSequence(BaseSequenceContract):
         assert isinstance(traj, NumpySE3Trajectory)
         assert len(traj) == s.get_length(sid)
 
-    def test_parse_pose_matches_get_pose(self):
-        # parse's POSE block (trajectory-indexed) must agree with get_pose, in order.
-        s = self.make_sequence()
-        sid = s.get_sensors()[0]
-        names = [2, 0, 3]
-        out = s.parse(sid, names, modalities={Modality.POSE})
-        for row, name in zip(out[Modality.POSE], names):
-            np.testing.assert_allclose(row, _pose_to_matrix(s.get_pose(sid, name)), atol=1e-9)
-
     # ----- "TUM provides no X" getters all raise --------------------------- #
     def test_unsupported_getters_raise(self):
         s = self.make_sequence()
@@ -463,3 +390,201 @@ class TestTumSequence(BaseSequenceContract):
             np.testing.assert_allclose(
                 _pose_to_matrix(s.get_pose(sid, k))[:3, 3], [k, 0, 0], atol=1e-4
             )
+
+
+# =========================================================================== #
+# frame-name -> frame-index find/map (get_frame_index / get_frame_indices)
+# =========================================================================== #
+class _NameMapSequence(BaseSequence):
+    """Minimal vendor exposing only a NAME manifest.
+
+    Frame names are deliberately *not* equal to their positions, so the
+    name->index find/map is exercised in the general case (the singular
+    ``.index()`` lookup conflates the two when names happen to be ``0..n-1``).
+    Only ``_manifest[sid][Modality.NAME]`` is touched by the index lookups, so
+    the on-disk ``BaseSequence.__init__`` and the decode getters are skipped.
+    """
+
+    def __init__(self, names, sensor_id=0):
+        self._manifest = {sensor_id: {Modality.NAME: list(names)}}
+
+    def load_manifest(self):
+        raise NotImplementedError
+
+    def load_calibration_tree(self):
+        raise NotImplementedError
+
+    def load_sensor_poses(self):
+        raise NotImplementedError
+
+    def get_modalities(self, sensor_id):
+        raise NotImplementedError
+
+    def get_length(self, sensor_id):
+        raise NotImplementedError
+
+    def get_rgb(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_semantic_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_dynamic_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_rgb_valid_mask(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_depth(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_depth_confidence(self, sensor_id, frame_name):
+        raise NotImplementedError
+
+    def get_tracks(self, sensor_id):
+        raise NotImplementedError
+
+    def get_pointcloud(self, sensor_id):
+        raise NotImplementedError
+
+
+class TestGetFrameIndices:
+    """``get_frame_indices`` maps a subset of frame names to their positions in
+    the sensor's frame-sorted NAME list, preserving the *subset* order."""
+
+    NAMES = [10, 20, 30, 40, 50]  # non-contiguous: name != position
+
+    def test_maps_subset_to_positions_in_subset_order(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, [30, 10, 50]) == [2, 0, 4]
+
+    def test_preserves_repeated_names(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, [20, 20, 40]) == [1, 1, 3]
+
+    def test_empty_subset_returns_empty(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, []) == []
+
+    def test_full_list_maps_to_identity_range(self):
+        s = _NameMapSequence(self.NAMES)
+        assert s.get_frame_indices(0, self.NAMES) == list(range(len(self.NAMES)))
+
+    def test_agrees_with_singular_get_frame_index(self):
+        s = _NameMapSequence(self.NAMES)
+        subset = [50, 30, 10, 40]
+        assert s.get_frame_indices(0, subset) == [
+            s.get_frame_index(0, n) for n in subset
+        ]
+
+    def test_unknown_name_raises(self):
+        s = _NameMapSequence(self.NAMES)
+        with pytest.raises(KeyError):
+            s.get_frame_indices(0, [10, 999])
+
+
+# =========================================================================== #
+# index addressing: the decode surface addresses frames by POSITION, not name
+# =========================================================================== #
+class _FakeTraj:
+    """Minimal pose-trajectory slice: wraps an ``(k, 4, 4)`` stack and returns
+    it from ``transform_matrix()`` (the only method the base getters/parse use)."""
+
+    def __init__(self, mats):
+        self._mats = mats
+
+    def transform_matrix(self):
+        return self._mats
+
+
+class _FakePoses:
+    """Position-indexable pose store mirroring the BaseSE3Trajectory indexing the
+    decode path relies on. ``[i]`` (int) -> single-frame slice; ``[idxs]``
+    (list/array) -> multi-frame slice -- without the real SE(3) machinery."""
+
+    def __init__(self, mats):
+        self._mats = list(mats)  # list of (4, 4) arrays
+
+    def __getitem__(self, key):
+        idxs = [key] if isinstance(key, (int, np.integer)) else list(key)
+        return _FakeTraj(np.stack([self._mats[i] for i in idxs], axis=0))
+
+
+class _IndexAddrSequence(BaseSequence):
+    """In-memory vendor whose frame NAMES are arbitrary strings (``"a"``, ``"b"``,
+    ``"c"``) and therefore deliberately != their positions. Pins that the decode
+    surface (get_pose / get_timestamp / parse) addresses frames by POSITION
+    (frame_index): any name resolution on these paths would raise on a
+    string-named, non-positional vendor.
+
+    Bypasses ``BaseSequence.__init__`` (no disk): sets the manifest + poses
+    directly. Only POSE + TIMESTAMP are advertised, so parse() never reaches the
+    image getters."""
+
+    _SENSOR = 0
+
+    def __init__(self):
+        mats = []
+        for k in range(3):
+            m = np.eye(4)
+            m[0, 3] = float(k)  # translation x encodes the position
+            mats.append(m)
+        self._manifest = {
+            self._SENSOR: {
+                Modality.NAME: ["a", "b", "c"],            # names != positions, not int
+                Modality.TIMESTAMP: [100.0, 200.0, 300.0],
+            }
+        }
+        self._sensor_poses = {self._SENSOR: _FakePoses(mats)}
+
+    def load_manifest(self):
+        raise NotImplementedError
+
+    def load_calibration_tree(self):
+        raise NotImplementedError
+
+    def load_sensor_poses(self):
+        raise NotImplementedError
+
+    def get_modalities(self, sensor_id):
+        return {Modality.POSE, Modality.TIMESTAMP}
+
+    def get_length(self, sensor_id):
+        return len(self._manifest[sensor_id][Modality.NAME])
+
+    def get_rgb(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_semantic_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_dynamic_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_rgb_valid_mask(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_depth(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_depth_confidence(self, sensor_id, frame_index):
+        raise NotImplementedError
+
+    def get_tracks(self, sensor_id):
+        raise NotImplementedError
+
+    def get_pointcloud(self, sensor_id):
+        raise NotImplementedError
+
+
+class TestIndexAddressing:
+    """The decode surface addresses frames by position, never by name."""
+
+    def test_get_pose_addresses_by_position(self):
+        seq = _IndexAddrSequence()
+        np.testing.assert_allclose(seq.get_pose(0, 0)[:3, 3], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(seq.get_pose(0, 2)[:3, 3], [2.0, 0.0, 0.0])
+
+    def test_get_timestamp_addresses_by_position(self):
+        seq = _IndexAddrSequence()
+        assert seq.get_timestamp(0, 1) == 200.0

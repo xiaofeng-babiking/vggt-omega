@@ -1,48 +1,56 @@
-# TUM overfitting experiment — 8-GPU DDP, dynamic SE(3) frame-window sampling.
+# TUM overfit, 100k steps, FSDP2 — the se3_overfit recipe rerun under sharding.
 #
 #   .venv/bin/torchrun --standalone --nproc_per_node=8 train.py \
-#       --config vggt_omega/training/config/train_tum_overfit_se3.yaml \
-#       --out_root outputs --run_name tum_overfit_se3_30k
+#       --config vggt_omega/training/config/train_tum_overfit_se3_fsdp_100k.yaml \
+#       --out_root outputs --run_name tum_overfit_se3_fsdp_100k
 #
 # Purpose:
-#   (1) exercise the SE(3) sampler (sample_se3_trajectory, hard-wired into
-#       SequenceDataset._se3_sample_ids) under a DYNAMIC per-batch frame count
-#       drawn from img_nums=[1,24] over a random [start,end] window, and confirm
-#       it keeps 8 GPUs fed (watch perf/imgs_per_sec, perf/step_time);
-#   (2) overfit a small TUM set and watch the camera-pose loss converge
-#       (train/loss_camera, printed every log_interval).
+#   Long FSDP companion to outputs/tum_overfit_se3_30k (DDP, 30k). The ONLY
+#   intended differences from train_tum_overfit_se3.yaml are:
+#     (1) optim.parallel: ddp -> fsdp  (+ the top-level fsdp: block);
+#     (2) run.max_steps: 30000 -> 100000  (intervals rescaled proportionally).
+#   Everything else — lr/wd/betas/warmup, the camera+depth-only loss, the TUM
+#   overfit set, max_img_per_gpu, the dynamic SE(3) [1,24] frame window — is held
+#   identical so the comparison isolates {DDP,30k} vs {FSDP,100k}.
 #
-# Notes vs the other train_*.yaml (which still carry PRE-reorg module paths and
-# won't instantiate):
-#   - post-reorg paths: dataloaders.{dynamic_dataloader,composed_dataset,
-#     sequence_dataset}, sequences.tum.TumSequence;
-#   - tracks disabled (track_util removed in 9a740c9 -> load_track=true raises),
-#     so the matching loss is off (match weight 0); camera/depth/point stay on;
-#   - TUM kwargs are rgbd_sync_diff/depth_scale (TumSequence.__init__), not the
-#     stale assoc_max_diff/intrinsics.
+# Comparison caveat: the warmup-cosine LR schedule is computed over max_steps, so
+# warmup is 1500 steps @30k vs 5000 steps @100k and the cosine decays to 0 at a
+# different step. The two loss curves therefore do NOT overlay step-for-step; read
+# them as "final converged quality + throughput/memory", not a per-step diff.
+# (See train_smoke_fsdp.yaml for the 20-step FSDP smoke this is scaled up from.)
 
 run:
-  output_dir: outputs/tum_overfit_se3   # train.py overrides with --out_root/--run_name
-  max_steps: 30000
-  log_interval: 20                      # ~1500 console/TB log points over the run
+  output_dir: outputs/tum_overfit_se3_fsdp_100k  # train.py overrides with --out_root/--run_name
+  max_steps: 100000
+  log_interval: 50                      # ~2000 console/TB log points over the run
   img_log_interval: 1000
-  val_interval: 5000                    # rank-0 TUM ATE every 5k steps (bonus pose curve)
-  ckpt_interval: 5000
+  val_interval: 5000                    # rank-0 TUM ATE/abs_rel every 5k steps (20 val points)
+  ckpt_interval: 5000                   # keep_last 3 -> <=3 pairs on disk (~41 GB peak)
   keep_last: 3
   seed: 42
 
 optim:
-  parallel: ddp              # ddp (default) | fsdp
+  parallel: fsdp             # ddp (default) | fsdp  <-- the change vs train_tum_overfit_se3.yaml
   # 2e-4 is the paper's 128-GPU peak; high for an 8-GPU fine-tune off the
-  # pretrained checkpoint. Warmup (5% -> 1500 steps) ramps in; if early
+  # pretrained checkpoint. Warmup (5% -> 5000 steps @100k) ramps in; if early
   # train/loss_camera spikes badly, drop to ~5e-5.
   lr: 2.0e-4
   weight_decay: 0.05
   betas: [0.9, 0.95]
   warmup_frac: 0.05
   grad_clip: 1.0
-  grad_compression: bf16                # halve the gradient allreduce on PCIe
+  grad_compression: bf16                # NOTE: a DDP comm hook; INERT under FSDP
+                                        # (the grad-reduce dtype is fsdp.reduce_dtype below).
+                                        # Kept only for visual parity with the DDP config.
   fused: true                           # fused AdamW on CUDA
+
+fsdp:
+  reshard_after_forward: true
+  param_dtype: "none"      # model heads enforce fp32 LayerNorm internally; don't cast params via FSDP
+  reduce_dtype: bfloat16   # bf16 gradient reduction (the FSDP analogue of grad_compression: bf16)
+  hybrid_shard: false      # single node -> full shard over all 8 GPUs (set true for multi-node)
+  shard_size: null         # null -> LOCAL_WORLD_SIZE (gpus per node)
+  cpu_offload: false       # 1B params shard comfortably on 80 GB A100s; no offload needed
 
 loss:
   # Camera + mono-depth only (experiment scope). point off: TUM world-points are

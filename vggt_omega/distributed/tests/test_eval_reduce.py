@@ -2,23 +2,37 @@ import torch.distributed as dist
 
 from vggt_omega.distributed.eval_reduce import (
     gather_pose_enc_to_rank0,
-    reduce_depth_means,
+    reduce_depth,
 )
+from vggt_omega.evaluates import scene
 from vggt_omega.distributed.tests._dist_test_util import run_distributed
 
 
-def _depth_worker(rank, world_size):
-    # rank r contributes r+1 frames each with abs_rel = (r+1)*10 (distinct, easy to verify)
-    n = rank + 1
-    per_frame = [{"abs_rel": float((rank + 1) * 10)} for _ in range(n)]
-    return reduce_depth_means(per_frame, ["abs_rel"], dist.group.WORLD)
+# Per-rank per-frame depth dicts with UNEVEN shards (incl. an empty rank), so the
+# test proves frame-weighting (not mean-of-rank-means) and empty-shard safety.
+def _shard_for(rank):
+    allframes = [
+        [{k: 1.0 for k in scene.DEPTH_KEYS}, {k: 2.0 for k in scene.DEPTH_KEYS}],  # rank 0: 2 frames
+        [{k: 3.0 for k in scene.DEPTH_KEYS}],                                       # rank 1: 1 frame
+        [],                                                                          # rank 2: empty
+        [{k: 4.0 for k in scene.DEPTH_KEYS}, {k: 5.0 for k in scene.DEPTH_KEYS},
+         {k: 6.0 for k in scene.DEPTH_KEYS}],                                       # rank 3: 3 frames
+    ]
+    return allframes[rank]
 
 
-def test_reduce_depth_means_is_frame_weighted():
-    # frames: rank0=[10], rank1=[20,20] -> mean = (10 + 20 + 20)/3
-    results = run_distributed(_depth_worker, 2)
-    for r in results:
-        assert abs(r["abs_rel"] - (10 + 20 + 20) / 3) < 1e-6
+def _worker(rank, world_size):
+    out = reduce_depth(_shard_for(rank), dist.group.WORLD)
+    # global frame-weighted mean of 1..6 = 3.5, over 6 scored frames; same on every rank.
+    for k in scene.DEPTH_KEYS:
+        assert abs(out[k] - 3.5) < 1e-9, (k, out[k])
+    assert out["num_frames"] == 6
+    return out["num_frames"]
+
+
+def test_reduce_depth_frame_weighted_over_uneven_shards():
+    results = run_distributed(_worker, 4)
+    assert all(r == 6 for r in results)
 
 
 def _pose_worker(rank, world_size, counts):
@@ -36,20 +50,6 @@ def test_gather_pose_enc_orders_by_global_index():
     assert rank0[0, :, 0].tolist() == [0, 1, 2, 3, 4, 5]
     for r in (1, 2):
         assert results[r] is None
-
-
-def _depth_worker_empty(rank, world_size):
-    # rank 2 holds 0 frames; means must still be frame-weighted over the non-empty ranks
-    counts = [1, 2, 0]
-    per_frame = [{"abs_rel": float((rank + 1) * 10)} for _ in range(counts[rank])]
-    return reduce_depth_means(per_frame, ["abs_rel"], dist.group.WORLD)
-
-
-def test_reduce_depth_means_with_empty_rank():
-    # frames: rank0=[10], rank1=[20,20], rank2=[] -> mean = (10+20+20)/3
-    results = run_distributed(_depth_worker_empty, 3)
-    for r in results:
-        assert abs(r["abs_rel"] - (10 + 20 + 20) / 3) < 1e-6
 
 
 def _pose_worker_empty(rank, world_size):

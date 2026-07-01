@@ -131,7 +131,11 @@ class Trainer:
 
     # --- setup ----------------------------------------------------------------
     def _setup_distributed(self):
+        self.parallel = str(OmegaConf.select(self.cfg, "optim.parallel", default="ddp")).lower()
+        if self.parallel not in ("ddp", "fsdp"):
+            raise ValueError(f"optim.parallel must be 'ddp' or 'fsdp', got {self.parallel!r}")
         world = int(os.environ.get("WORLD_SIZE", "1"))
+        self.mesh = None
         if world > 1:
             from vggt_omega.distributed.process_group import init_distributed
 
@@ -141,6 +145,27 @@ class Trainer:
             self.rank, self.world_size, self.local_rank = 0, 1, 0
             self.device = (
                 torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
+            )
+            if self.parallel == "fsdp" and not dist.is_initialized():
+                # FSDP needs a real process group even at world=1. Use NCCL on CUDA,
+                # gloo on CPU; both as a single-rank group.
+                os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+                os.environ.setdefault("MASTER_PORT", "29555")
+                if self.device.type == "cuda":
+                    torch.cuda.set_device(0)
+                dist.init_process_group(
+                    backend="nccl" if self.device.type == "cuda" else "gloo",
+                    rank=0,
+                    world_size=1,
+                )
+        if self.parallel == "fsdp":
+            from vggt_omega.training.parallel import build_dp_mesh
+
+            self.mesh = build_dp_mesh(
+                self.world_size,
+                hybrid_shard=bool(OmegaConf.select(self.cfg, "fsdp.hybrid_shard", default=False)),
+                shard_size=OmegaConf.select(self.cfg, "fsdp.shard_size", default=None),
+                device_type=self.device.type,
             )
         # The dataloader worker_init_fn reads RANK unconditionally — set before any build.
         os.environ.setdefault("RANK", "0")
@@ -163,7 +188,21 @@ class Trainer:
                 logger.info(f"restored {n} encoder tensors from {encoder_src}")
         model.aggregator.gradient_checkpointing = bool(self.cfg.model.gradient_checkpointing)
         model = model.to(self.device)
-        if self.world_size > 1:
+        if self.parallel == "fsdp":
+            # optim.grad_compression is a DDP comm hook; under FSDP, the gradient-reduce dtype is fsdp.reduce_dtype instead.
+            from vggt_omega.training.parallel import apply_fsdp
+
+            apply_fsdp(
+                model,
+                self.mesh,
+                reshard_after_forward=bool(
+                    OmegaConf.select(self.cfg, "fsdp.reshard_after_forward", default=True)
+                ),
+                param_dtype=str(OmegaConf.select(self.cfg, "fsdp.param_dtype", default="none")),
+                reduce_dtype=str(OmegaConf.select(self.cfg, "fsdp.reduce_dtype", default="bfloat16")),
+                cpu_offload=bool(OmegaConf.select(self.cfg, "fsdp.cpu_offload", default=False)),
+            )
+        elif self.world_size > 1:
             model = DistributedDataParallel(
                 model,
                 device_ids=[self.local_rank],
@@ -177,6 +216,27 @@ class Trainer:
 
     def _unwrapped_model(self):
         return self.model.module if isinstance(self.model, DistributedDataParallel) else self.model
+
+    def _full_state_dict(self):
+        """Consolidated, plain (non-DTensor) model state dict. Collective under FSDP."""
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+
+            return get_model_state_dict(
+                self.model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+            )
+        return self._unwrapped_model().state_dict()
+
+    def _full_optim_state_dict(self):
+        """Consolidated optimizer state dict. Collective under FSDP."""
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict, StateDictOptions
+
+            return get_optimizer_state_dict(
+                self.model, self.optimizer,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
+        return self.optimizer.state_dict()
 
     def _build_data(self, data_override):
         if data_override is not None:
@@ -267,8 +327,10 @@ class Trainer:
         predictions = self.model(images, return_last_patch_tokens=match_on)
         losses = self.loss_computer(predictions, batch, tuple(images.shape[-2:]))
         losses["total"].backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), self.cfg.optim.grad_clip
+        from vggt_omega.training.parallel import grad_norm_to_float
+
+        grad_norm = grad_norm_to_float(
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.optim.grad_clip)
         )
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
@@ -311,16 +373,17 @@ class Trainer:
 
     # --- checkpointing --------------------------------------------------------------
     def _save(self, step):
+        # Gather BEFORE the rank guard: under FSDP these are collective and every
+        # rank must participate (rank 0 alone would deadlock).
+        model_sd = self._full_state_dict()
+        optim_sd = self._full_optim_state_dict()
         if self.rank != 0:
             return
-        torch.save(
-            self._unwrapped_model().state_dict(),
-            os.path.join(self.out_dir, f"model_step{step:06d}.pt"),
-        )
+        torch.save(model_sd, os.path.join(self.out_dir, f"model_step{step:06d}.pt"))
         state = {
             "step": step,
             "epoch": self._epoch,
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": optim_sd,
             "scheduler": self.scheduler.state_dict(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
@@ -347,8 +410,24 @@ class Trainer:
             raise FileNotFoundError(
                 f"missing model checkpoint {model_path} for sidecar {trainer_ckpt_path}"
             )
-        self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
-        self.optimizer.load_state_dict(state["optimizer"])
+        if self.parallel == "fsdp":
+            from torch.distributed.checkpoint.state_dict import (
+                StateDictOptions,
+                set_model_state_dict,
+                set_optimizer_state_dict,
+            )
+
+            opts = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True)
+            # Only rank 0 needs the full weights on disk; broadcast_from_rank0
+            # scatters them to every rank's shards, so non-rank-0 ranks need no
+            # access to model_path (no shared-FS requirement for the weights file).
+            model_sd = torch.load(model_path, map_location="cpu") if self.rank == 0 else {}
+            set_model_state_dict(self.model, model_sd, options=opts)
+            # optim state dict is the 3rd POSITIONAL arg; optimizer already wraps params.
+            set_optimizer_state_dict(self.model, self.optimizer, state["optimizer"], options=opts)
+        else:
+            self._unwrapped_model().load_state_dict(torch.load(model_path, map_location="cpu"))
+            self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         torch.set_rng_state(state["torch_rng"])
         cuda_rng = state.get("cuda_rng")
@@ -362,15 +441,25 @@ class Trainer:
 
     # --- validation -----------------------------------------------------------------
     def _validate(self, step):
-        if self.rank != 0:
-            return
+        if self.parallel == "fsdp":
+            # The param all-gather is collective: EVERY rank must call the gather,
+            # then only rank 0 evaluates a transient unsharded copy. A rank-0-only
+            # forward on the sharded model would deadlock.
+            full_sd = self._full_state_dict()
+            if self.rank != 0:
+                return
+            model = VGGTOmega(embed_dim=int(self.cfg.model.embed_dim)).to(self.device)
+            model.load_state_dict(full_sd)
+        else:
+            if self.rank != 0:
+                return
+            model = self._unwrapped_model()
         # Lazy imports: `inference` registers gflags at import (train.py keeps its
         # flag names disjoint) and `evaluates` pulls in evo/matplotlib.
         import inference
         from hydra.utils import instantiate
         from vggt_omega.evaluates import CameraPoseMetric, MonoDepthMetric
 
-        model = self._unwrapped_model()
         model.eval()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()  # release training-shape blocks before the val forward
