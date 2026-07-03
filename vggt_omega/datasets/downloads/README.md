@@ -65,7 +65,7 @@ dirs and runtime-cloned upstream repos (`_*_repo/`) are git-ignored; the
 `pyproject.toml` + `uv.lock` are committed.
 
 Datasets with **no Python dependency** (pure `wget`/`curl`: megadepth, replica,
-eden, paralleldomain4d, unrealstereo4k, vkitti, tum, seven_scenes, mvs_synth, mipnerf360, plus the
+eden, paralleldomain4d, unrealstereo4k, vkitti, tum, seven_scenes, mvs_synth, mipnerf360, hypersim, plus the
 manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 `gsutil`-based waymo) have **no** `envs/` entry. `habitat` is special:
 `habitat-sim` is conda-only (not on PyPI), so that script uses `$HABITAT_PYTHON`
@@ -80,7 +80,7 @@ manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 | `open/download_co3d.sh` | FAIR repo downloader (CDN) | Open |
 | `open/download_uco3d.sh` | FAIR repo / HF `facebook/uco3d` | Open |
 | `open/download_megadepth.sh` | Cornell direct wget | Open |
-| `open/download_hypersim.sh` | `apple/ml-hypersim` script | Open |
+| `open/download_hypersim.sh` | Apple CDN per-scene `.zip` (direct wget; URL list from `apple/ml-hypersim`) | Open |
 | `open/download_replica.sh` | GitHub release tarballs | Open |
 | `open/download_megasynth.sh` | HF `hwjiang/MegaSynth` | Open |
 | `open/download_mvs_synth.sh` | HF `phuang17/MVS-Synth` | Open |
