@@ -192,5 +192,11 @@ uv_pip() {
 # Args: <repo_id> <dest> [extra args...]
 hf_download() {
     local repo="$1" dest="$2"; shift 2
-    uv_tool huggingface-cli download "$repo" --repo-type dataset --local-dir "$dest" "$@"
+    # huggingface_hub >= 1.0 renamed the CLI `huggingface-cli` -> `hf` (and
+    # dropped the [cli] extra); prefer the new name, fall back for old envs.
+    if uv_tool hf version >/dev/null 2>&1; then
+        uv_tool hf download "$repo" --repo-type dataset --local-dir "$dest" "$@"
+    else
+        uv_tool huggingface-cli download "$repo" --repo-type dataset --local-dir "$dest" "$@"
+    fi
 }

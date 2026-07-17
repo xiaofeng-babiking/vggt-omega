@@ -19,9 +19,14 @@ uv_pip install -e "$REPO_DIR"
 # Use --download_small_subset (~9.6 GB) for a quick test, or --use_huggingface
 # to pull from facebook/uco3d instead of the CDN. Pass extra flags after the dest.
 log "Running official downloader (add --download_small_subset for the 9.6 GB subset)"
+# --use_huggingface: the signed fbcdn URLs in Meta's published links json
+# expire and are (as of 2026-07) stale upstream -> every CDN download 403s.
+# The HF mirror route (added upstream in the hf-download PR) works and
+# honors HF_ENDPOINT.
 uv_py "$REPO_DIR/dataset_download/download_dataset.py" \
     --download_folder "$DEST_DIR" \
     --checksum_check \
+    --use_huggingface \
     "${@:2}"
 
 log "Done."

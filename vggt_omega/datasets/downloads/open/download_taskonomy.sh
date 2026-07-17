@@ -15,12 +15,15 @@ uv_sync   # isolated uv env: envs/taskonomy (omnidata-tools)
 # subset: debug | tiny | medium | full | fullplus (default fullplus = everything)
 SUBSET="${SUBSET:-fullplus}"
 log "Downloading Taskonomy via omnitools (subset=$SUBSET); --agree accepts the terms"
+# omnitools refuses --agree without a name and (syntactically valid) email.
 uv_tool omnitools.download all \
     --components taskonomy \
     --subset "$SUBSET" \
     --dest "$DEST_DIR" \
     --connections_total 40 \
     --agree \
+    --name "${TASKONOMY_NAME:-$USER}" \
+    --email "${TASKONOMY_EMAIL:?omnitools needs an email: TASKONOMY_EMAIL=you@example.com $0}" \
     "${@:2}"
 
 log "Done. TASKONOMY_DIR=$DEST_DIR"
