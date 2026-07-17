@@ -84,6 +84,8 @@ fetch() {
     local url="$1" out="$2"
     # Route huggingface.co URLs through the configured HF_ENDPOINT mirror
     # (defaults to hf-mirror.com). Leaves all other hosts untouched.
+    # --fail on the curl path: without it curl saves error bodies (404 HTML
+    # pages) as the output file and reports success.
     if [ -n "${HF_ENDPOINT:-}" ] && [ "$HF_ENDPOINT" != "https://huggingface.co" ]; then
         case "$url" in
             https://huggingface.co/*)
@@ -97,7 +99,7 @@ fetch() {
         command -v curl >/dev/null 2>&1 && warn "wget failed for $url -- falling back to curl"
     fi
     if command -v curl >/dev/null 2>&1; then
-        curl -L --retry 5 --continue-at - -o "$out" "$url" && return 0
+        curl -L --fail --retry 5 --continue-at - -o "$out" "$url" && return 0
         return 1
     fi
     command -v wget >/dev/null 2>&1 || die "neither wget nor curl is available"
