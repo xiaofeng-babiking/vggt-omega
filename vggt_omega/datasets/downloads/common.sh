@@ -106,6 +106,21 @@ fetch() {
     return 1
 }
 
+# Retry fetch() until it succeeds. Each attempt resumes the partial file
+# (wget --continue / curl --continue-at -), so links that drop multi-GB
+# transfers every few GB still converge after a few attempts.
+# Usage: fetch_retry <url> <out_path> [attempts]   (default $FETCH_RETRIES or 20)
+fetch_retry() {
+    local url="$1" out="$2" tries="${3:-${FETCH_RETRIES:-20}}" i
+    for ((i = 1; i <= tries; i++)); do
+        fetch "$url" "$out" && return 0
+        warn "fetch attempt $i/$tries failed for $url -- retrying (resumes partial)"
+        sleep 10
+    done
+    err "fetch giving up after $tries attempts: $url"
+    return 1
+}
+
 # Print a clearly-formatted "manual access required" block and exit non-zero.
 # Usage: manual_gate "Homepage URL" <<'EOF'
 #   step 1

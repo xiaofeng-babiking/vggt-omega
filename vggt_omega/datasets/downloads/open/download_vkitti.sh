@@ -15,7 +15,7 @@ for kind in rgb depth classSegmentation instanceSegmentation textgt \
         textgt) ext="tar.gz" ;;      # upstream ships textgt as .tar.gz; everything else .tar
         *)      ext="tar" ;;
     esac
-    fetch "$V2/vkitti_2.0.3_${kind}.${ext}" "$DEST_DIR/vkitti_2.0.3_${kind}.${ext}"
+    fetch_retry "$V2/vkitti_2.0.3_${kind}.${ext}" "$DEST_DIR/vkitti_2.0.3_${kind}.${ext}"
 done
 
 log "Extracting"

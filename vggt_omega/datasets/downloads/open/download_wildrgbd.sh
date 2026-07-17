@@ -98,23 +98,13 @@ for cat in "${CATS[@]}"; do
     log "Fetching $cat (${#parts[@]} part(s)) via HF mirror"
     fetch_failed=0
     for f in "${parts[@]}"; do
-        # fetch() (wget --continue via HF_ENDPOINT) instead of `hf download`:
-        # some files in this repo are Xet-backed and the hf CLI cannot fetch
-        # those through hf-mirror ("Local entry not found"), while the plain
-        # resolve/main redirect chain works and is resumable.
-        #
-        # Retry loop: multi-GB transfers on this route drop every few GB and
-        # a single fetch() (wget --tries=5) often isn't enough for the 40 GB+
-        # parts. Every retry resumes from the partial, so attempts converge.
-        got=0
-        for ((try = 1; try <= ${WILDRGBD_FETCH_RETRIES:-20}; try++)); do
-            if fetch "https://huggingface.co/$REPO/resolve/main/$f" "$DEST_DIR/$f"; then
-                got=1; break
-            fi
-            warn "fetch attempt $try/${WILDRGBD_FETCH_RETRIES:-20} failed for $f -- retrying (resumes partial)"
-            sleep 10
-        done
-        if [ "$got" -ne 1 ]; then
+        # fetch_retry() (wget --continue via HF_ENDPOINT) instead of `hf
+        # download`: some files in this repo are Xet-backed and the hf CLI
+        # cannot fetch those through hf-mirror ("Local entry not found"),
+        # while the plain resolve/main redirect chain works and is resumable.
+        # Retries matter here: this route drops 40 GB+ parts every few GB.
+        if ! fetch_retry "https://huggingface.co/$REPO/resolve/main/$f" \
+                "$DEST_DIR/$f" "${WILDRGBD_FETCH_RETRIES:-20}"; then
             warn "download failed for $cat/$f"
             fetch_failed=1; break
         fi
