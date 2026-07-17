@@ -12,8 +12,8 @@ log "Fetching Virtual KITTI 2.0.3 archives"
 for kind in rgb depth classSegmentation instanceSegmentation textgt \
             forwardFlow backwardFlow forwardSceneFlow backwardSceneFlow; do
     case "$kind" in
-        rgb|textgt) ext="tar" ;;     # rgb/textgt are .tar; others .tar.gz
-        *)          ext="tar.gz" ;;
+        textgt) ext="tar.gz" ;;      # upstream ships textgt as .tar.gz; everything else .tar
+        *)      ext="tar" ;;
     esac
     fetch "$V2/vkitti_2.0.3_${kind}.${ext}" "$DEST_DIR/vkitti_2.0.3_${kind}.${ext}"
 done
