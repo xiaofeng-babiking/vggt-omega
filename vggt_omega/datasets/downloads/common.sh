@@ -135,8 +135,12 @@ fetch_aria2() {
         fetch_retry "$url" "$out" "$tries"
         return
     fi
+    # --lowest-speed-limit: some hosts (Cornell) shed connections over time
+    # until one slow stream remains; aborting below the floor makes the retry
+    # loop reconnect at full width instead of limping for days.
     local args=(-c -x 8 -s 8 --file-allocation=none --console-log-level=warn
                 --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
+                --lowest-speed-limit=300K
                 -d "$(dirname "$out")" -o "$(basename "$out")")
     for ((i = 1; i <= tries; i++)); do
         aria2c "${args[@]}" --all-proxy="" "$url" && return 0
