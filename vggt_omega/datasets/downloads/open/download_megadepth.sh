@@ -10,8 +10,10 @@ log "Target: $DEST_DIR"
 
 BASE="https://www.cs.cornell.edu/projects/megadepth/dataset"
 
+# Big tarballs go through fetch_aria2: Cornell throttles per connection
+# (<1 MB/s and prone to stalls single-stream; 8-way segmented ~4-5x faster).
 log "Fetching MegaDepth v1 (~199 GB)"
-fetch_retry "$BASE/Megadepth_v1/MegaDepth_v1.tar.gz" "$DEST_DIR/MegaDepth_v1.tar.gz"
+fetch_aria2 "$BASE/Megadepth_v1/MegaDepth_v1.tar.gz" "$DEST_DIR/MegaDepth_v1.tar.gz"
 
 log "Fetching train/val + test lists"
 fetch_retry "$BASE/data_lists/train_val_list.tar.gz" "$DEST_DIR/train_val_list.tar.gz"
@@ -19,7 +21,7 @@ fetch_retry "$BASE/data_lists/test_lists.tar.gz"      "$DEST_DIR/test_lists.tar.
 
 # SfM models (~667 GB) -- the full structure-from-motion reconstructions.
 log "Fetching MegaDepth SfM models (~667 GB)"
-fetch_retry "$BASE/MegaDepth_SfM/MegaDepth_SfM_v1.tar.xz" "$DEST_DIR/MegaDepth_SfM_v1.tar.xz"
+fetch_aria2 "$BASE/MegaDepth_SfM/MegaDepth_SfM_v1.tar.xz" "$DEST_DIR/MegaDepth_SfM_v1.tar.xz"
 
 log "Extracting archives"
 for f in "$DEST_DIR"/*.tar.gz; do tar -xzf "$f" -C "$DEST_DIR"; done

@@ -121,6 +121,33 @@ fetch_retry() {
     return 1
 }
 
+# Segmented multi-connection download with resume, for hosts that throttle
+# per connection (NAVER ~150 KB/s/stream, Cornell ~0.7 MB/s/stream; 8-way
+# measured 5-18x faster). Tries direct first -- both hosts stall through the
+# local proxy -- then once via the proxy env before sleeping. Falls back to
+# fetch_retry when aria2c is absent. NOTE: once aria2c has touched a file,
+# only aria2c may finish it (sparse segments tracked in <file>.aria2), so
+# callers must use this for every attempt on a given file.
+# Usage: fetch_aria2 <url> <out_path> [attempts]   (default $FETCH_RETRIES or 20)
+fetch_aria2() {
+    local url="$1" out="$2" tries="${3:-${FETCH_RETRIES:-20}}" i
+    if ! command -v aria2c >/dev/null 2>&1; then
+        fetch_retry "$url" "$out" "$tries"
+        return
+    fi
+    local args=(-c -x 8 -s 8 --file-allocation=none --console-log-level=warn
+                --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
+                -d "$(dirname "$out")" -o "$(basename "$out")")
+    for ((i = 1; i <= tries; i++)); do
+        aria2c "${args[@]}" --all-proxy="" "$url" && return 0
+        warn "aria2c direct attempt $i/$tries failed for $url -- retrying via proxy"
+        aria2c "${args[@]}" "$url" && return 0
+        sleep 10
+    done
+    err "aria2c giving up after $tries attempts: $url"
+    return 1
+}
+
 # Print a clearly-formatted "manual access required" block and exit non-zero.
 # Usage: manual_gate "Homepage URL" <<'EOF'
 #   step 1
