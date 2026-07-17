@@ -110,9 +110,11 @@ for seq in "${SEQUENCES[@]}"; do
 
     tgz="$DEST_DIR/$seq.tgz"
     log "Fetching $fb/$seq.tgz"
-    if ! fetch "$BASE/$fb/$seq.tgz" "$tgz"; then
+    # Keep the partial on failure: fetch_retry resumes it (wget --continue),
+    # both across its own attempts and on a later re-run of this script.
+    if ! fetch_retry "$BASE/$fb/$seq.tgz" "$tgz"; then
         warn "download failed for $seq -- skipping"
-        rm -f "$tgz"; failed=$((failed + 1)); continue
+        failed=$((failed + 1)); continue
     fi
     log "Extracting $seq"
     if ! tar -xzf "$tgz" -C "$DEST_DIR"; then

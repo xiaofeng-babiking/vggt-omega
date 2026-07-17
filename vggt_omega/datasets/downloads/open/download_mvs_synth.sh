@@ -14,7 +14,7 @@ RES="${RES:-1080}"
 BASE="https://huggingface.co/datasets/phuang17/MVS-Synth/resolve/main"
 
 log "Fetching GTAV_${RES}.tar.gz"
-fetch "$BASE/GTAV_${RES}.tar.gz" "$DEST_DIR/GTAV_${RES}.tar.gz"
+fetch_retry "$BASE/GTAV_${RES}.tar.gz" "$DEST_DIR/GTAV_${RES}.tar.gz"
 
 log "Extracting"
 tar -xzf "$DEST_DIR/GTAV_${RES}.tar.gz" -C "$DEST_DIR"

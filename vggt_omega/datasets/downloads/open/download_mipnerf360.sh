@@ -36,7 +36,7 @@ unz() {
 # shellcheck disable=SC2086  # intentional word-split of the archive list
 for z in $ARCHIVES; do
     log "Fetching $z"
-    fetch "$BASE/$z" "$DEST_DIR/$z"
+    fetch_retry "$BASE/$z" "$DEST_DIR/$z"
     log "Extracting $z"
     unz "$DEST_DIR/$z" -d "$DEST_DIR" \
         || warn "extract failed for $z (corrupt/partial, or unzip too old for ZIP64?)"

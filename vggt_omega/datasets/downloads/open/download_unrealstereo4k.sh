@@ -11,7 +11,7 @@ log "Target: $DEST_DIR"
 BASE="https://s3.eu-central-1.amazonaws.com/avg-projects/smd_nets"
 log "Fetching UnrealStereo4K scenes 00000..00008 (4K; ~600 GB total)"
 for i in 00000 00001 00002 00003 00004 00005 00006 00007 00008; do
-    fetch "$BASE/UnrealStereo4K_$i.zip" "$DEST_DIR/UnrealStereo4K_$i.zip"
+    fetch_retry "$BASE/UnrealStereo4K_$i.zip" "$DEST_DIR/UnrealStereo4K_$i.zip"
 done
 
 log "Extracting"

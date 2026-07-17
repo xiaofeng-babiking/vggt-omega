@@ -14,14 +14,14 @@ BASE="https://isis-data.science.uva.nl/hale/EDEN"
 # Metadata first (small), then the large modality archives.
 for f in Stats.zip CameraInfo.zip LightInfo.zip; do
     log "Fetching $f"
-    fetch "$BASE/$f" "$DEST_DIR/$f"
+    fetch_retry "$BASE/$f" "$DEST_DIR/$f"
 done
 
 # Large modalities (RGB 333G, Depth 241G, SurfaceNormal 130G, Segmentation 13G).
 # Comment out any you do not need.
 for f in RGB.zip Depth.zip SurfaceNormal.zip Segmentation.zip; do
     log "Fetching $f"
-    fetch "$BASE/$f" "$DEST_DIR/$f"
+    fetch_retry "$BASE/$f" "$DEST_DIR/$f"
 done
 
 log "Extracting"

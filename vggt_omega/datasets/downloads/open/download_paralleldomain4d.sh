@@ -9,7 +9,7 @@ DEST_DIR="$(resolve_dest "${1:-}" "paralleldomain4d")"
 log "Target: $DEST_DIR"
 
 log "Fetching basic modalities (~2.3 TB)"
-fetch "https://tri-ml-public.s3.amazonaws.com/datasets/ParallelDomain-4D.tar" \
+fetch_retry "https://tri-ml-public.s3.amazonaws.com/datasets/ParallelDomain-4D.tar" \
     "$DEST_DIR/ParallelDomain-4D.tar"
 
 # Additional modalities (~3.2 TB) -- uncomment to merge in.

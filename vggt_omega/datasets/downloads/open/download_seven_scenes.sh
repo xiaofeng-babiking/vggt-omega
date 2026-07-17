@@ -73,9 +73,11 @@ for scene in "${SCENES[@]}"; do
 
     zip="$DEST_DIR/$scene.zip"
     log "Fetching $scene.zip"
-    if ! fetch "$BASE/$scene.zip" "$zip"; then
+    # Keep the partial on failure: fetch_retry resumes it (wget --continue),
+    # both across its own attempts and on a later re-run of this script.
+    if ! fetch_retry "$BASE/$scene.zip" "$zip"; then
         warn "download failed for $scene -- skipping"
-        rm -f "$zip"; failed=$((failed + 1)); continue
+        failed=$((failed + 1)); continue
     fi
 
     log "Extracting $scene.zip"

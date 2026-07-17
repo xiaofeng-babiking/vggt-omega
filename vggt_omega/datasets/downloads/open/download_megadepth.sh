@@ -11,15 +11,15 @@ log "Target: $DEST_DIR"
 BASE="https://www.cs.cornell.edu/projects/megadepth/dataset"
 
 log "Fetching MegaDepth v1 (~199 GB)"
-fetch "$BASE/Megadepth_v1/MegaDepth_v1.tar.gz" "$DEST_DIR/MegaDepth_v1.tar.gz"
+fetch_retry "$BASE/Megadepth_v1/MegaDepth_v1.tar.gz" "$DEST_DIR/MegaDepth_v1.tar.gz"
 
 log "Fetching train/val + test lists"
-fetch "$BASE/data_lists/train_val_list.tar.gz" "$DEST_DIR/train_val_list.tar.gz"
-fetch "$BASE/data_lists/test_lists.tar.gz"      "$DEST_DIR/test_lists.tar.gz"
+fetch_retry "$BASE/data_lists/train_val_list.tar.gz" "$DEST_DIR/train_val_list.tar.gz"
+fetch_retry "$BASE/data_lists/test_lists.tar.gz"      "$DEST_DIR/test_lists.tar.gz"
 
 # SfM models (~667 GB) -- the full structure-from-motion reconstructions.
 log "Fetching MegaDepth SfM models (~667 GB)"
-fetch "$BASE/MegaDepth_SfM/MegaDepth_SfM_v1.tar.xz" "$DEST_DIR/MegaDepth_SfM_v1.tar.xz"
+fetch_retry "$BASE/MegaDepth_SfM/MegaDepth_SfM_v1.tar.xz" "$DEST_DIR/MegaDepth_SfM_v1.tar.xz"
 
 log "Extracting archives"
 for f in "$DEST_DIR"/*.tar.gz; do tar -xzf "$f" -C "$DEST_DIR"; done
