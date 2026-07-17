@@ -98,8 +98,11 @@ for cat in "${CATS[@]}"; do
     log "Fetching $cat (${#parts[@]} part(s)) via HF mirror"
     fetch_failed=0
     for f in "${parts[@]}"; do
-        # `hf` (new HF CLI) honors HF_ENDPOINT; downloads into DEST_DIR/<f>.
-        if ! uv_tool hf download "$REPO" "$f" --local-dir "$DEST_DIR"; then
+        # fetch() (wget --continue via HF_ENDPOINT) instead of `hf download`:
+        # some files in this repo are Xet-backed and the hf CLI cannot fetch
+        # those through hf-mirror ("Local entry not found"), while the plain
+        # resolve/main redirect chain works and is resumable.
+        if ! fetch "https://huggingface.co/$REPO/resolve/main/$f" "$DEST_DIR/$f"; then
             warn "download failed for $cat/$f"
             fetch_failed=1; break
         fi
