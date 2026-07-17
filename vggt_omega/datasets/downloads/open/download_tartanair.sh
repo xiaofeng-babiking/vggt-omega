@@ -23,6 +23,11 @@ ta.download(
     modality=['image', 'depth', 'seg'],       # 'pose' is not a modality;
     camera_name=['lcam_front'],               # per-frame poses (pose_lcam_front.txt) come automatically
     unzip=True,
+    num_workers=4,
+    # 'huggingface' (the default) needs huggingface.co and fails through
+    # hf-mirror; 'airlab' hits CMU's own bucket directly and also skips
+    # zips that already exist on disk, so interrupted runs resume.
+    data_source='airlab',
 )
 PY
 
