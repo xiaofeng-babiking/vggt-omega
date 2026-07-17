@@ -22,24 +22,7 @@ for kind in rgb depth classSegmentation instanceSegmentation textgt \
         textgt) ext="tar.gz" ;;      # upstream ships textgt as .tar.gz; everything else .tar
         *)      ext="tar" ;;
     esac
-    url="$V2/vkitti_2.0.3_${kind}.${ext}"
-    out="$DEST_DIR/vkitti_2.0.3_${kind}.${ext}"
-    if command -v aria2c >/dev/null 2>&1; then
-        got=0
-        for ((i = 1; i <= ${FETCH_RETRIES:-20}; i++)); do
-            if aria2c -c -x 8 -s 8 --all-proxy="" --file-allocation=none \
-                --console-log-level=warn --retry-wait=10 --max-tries=5 \
-                -d "$DEST_DIR" -o "$(basename "$out")" "$url"; then
-                got=1; break
-            fi
-            warn "aria2c attempt $i/${FETCH_RETRIES:-20} failed for $url -- retrying (resumes)"
-            sleep 10
-        done
-        [ "$got" -eq 1 ] || die "download failed after ${FETCH_RETRIES:-20} aria2c attempts: $url"
-    else
-        # subshell: fetch_retry is a function, so env -u can't wrap it
-        (unset http_proxy https_proxy; fetch_retry "$url" "$out")
-    fi
+    fetch_aria2 "$V2/vkitti_2.0.3_${kind}.${ext}" "$DEST_DIR/vkitti_2.0.3_${kind}.${ext}"
 done
 
 log "Extracting"

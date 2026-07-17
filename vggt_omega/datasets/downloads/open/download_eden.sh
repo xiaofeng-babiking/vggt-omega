@@ -18,10 +18,12 @@ for f in Stats.zip CameraInfo.zip LightInfo.zip; do
 done
 
 # Large modalities (RGB 333G, Depth 241G, SurfaceNormal 130G, Segmentation 13G).
-# Comment out any you do not need.
+# Comment out any you do not need. fetch_aria2: the UvA server's per-stream
+# rate collapses under load (observed 18 MB/s -> 0.2 MB/s); 8-way segmented
+# holds throughput.
 for f in RGB.zip Depth.zip SurfaceNormal.zip Segmentation.zip; do
     log "Fetching $f"
-    fetch_retry "$BASE/$f" "$DEST_DIR/$f"
+    fetch_aria2 "$BASE/$f" "$DEST_DIR/$f"
 done
 
 log "Extracting"
