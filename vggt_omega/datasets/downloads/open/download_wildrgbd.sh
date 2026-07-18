@@ -98,12 +98,12 @@ for cat in "${CATS[@]}"; do
     log "Fetching $cat (${#parts[@]} part(s)) via HF mirror"
     fetch_failed=0
     for f in "${parts[@]}"; do
-        # fetch_retry() (wget --continue via HF_ENDPOINT) instead of `hf
-        # download`: some files in this repo are Xet-backed and the hf CLI
-        # cannot fetch those through hf-mirror ("Local entry not found"),
-        # while the plain resolve/main redirect chain works and is resumable.
-        # Retries matter here: this route drops 40 GB+ parts every few GB.
-        if ! fetch_retry "https://huggingface.co/$REPO/resolve/main/$f" \
+        # fetch_aria2 (segmented, direct-first) instead of `hf download`:
+        # some files in this repo are Xet-backed and the hf CLI cannot fetch
+        # those through hf-mirror ("Local entry not found"), while the plain
+        # resolve/main redirect chain works, resumes, and is several times
+        # faster segmented. Retries matter: 40 GB+ parts drop every few GB.
+        if ! fetch_aria2 "https://hf-mirror.com/$REPO/resolve/main/$f" \
                 "$DEST_DIR/$f" "${WILDRGBD_FETCH_RETRIES:-20}"; then
             warn "download failed for $cat/$f"
             fetch_failed=1; break
