@@ -19,10 +19,32 @@ uv_pip install -e "$REPO_DIR"
 # Use --download_small_subset (~9.6 GB) for a quick test, or --use_huggingface
 # to pull from facebook/uco3d instead of the CDN. Pass extra flags after the dest.
 log "Running official downloader (add --download_small_subset for the 9.6 GB subset)"
+# The upstream downloader hardcodes https://huggingface.co in its download
+# URLs, ignoring HF_ENDPOINT -- and direct huggingface.co connections are
+# reset on this network. Patch the cloned repo (idempotent, marker-guarded)
+# to honor HF_ENDPOINT so downloads route via hf-mirror.
+python3 - "$REPO_DIR" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]) / "dataset_download" / "download_dataset_impl.py"
+src = p.read_text()
+if 'PATCHED(vggt-omega)' in src:
+    print('uco3d HF_ENDPOINT patch: already applied')
+else:
+    old = '            link_data_with_link["download_url"] = f"https://huggingface.co/datasets/{huggingface_repo}/resolve/main/{filename}"'
+    new = ('            # PATCHED(vggt-omega): honor HF_ENDPOINT (hf-mirror); direct\n'
+           '            # huggingface.co connections are reset on this network.\n'
+           '            import os as _os\n'
+           '            _ep = _os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")\n'
+           '            link_data_with_link["download_url"] = f"{_ep}/datasets/{huggingface_repo}/resolve/main/{filename}"')
+    assert old in src, 'uco3d downloader changed upstream; update patch in download_uco3d.sh'
+    p.write_text(src.replace(old, new))
+    print('uco3d HF_ENDPOINT patch: applied')
+PY
+
 # --use_huggingface: the signed fbcdn URLs in Meta's published links json
 # expire and are (as of 2026-07) stale upstream -> every CDN download 403s.
 # The HF mirror route (added upstream in the hf-download PR) works and
-# honors HF_ENDPOINT.
+# honors HF_ENDPOINT (with the patch above).
 uv_py "$REPO_DIR/dataset_download/download_dataset.py" \
     --download_folder "$DEST_DIR" \
     --checksum_check \
