@@ -45,10 +45,16 @@ PY
 # expire and are (as of 2026-07) stale upstream -> every CDN download 403s.
 # The HF mirror route (added upstream in the hf-download PR) works and
 # honors HF_ENDPOINT (with the patch above).
+# n_download_workers: the default (4) single-stream workers gave ~47 KB/s
+# each on hf-mirror direct; many more parallel connections is the only
+# throughput lever the official downloader exposes (it has no segmented
+# per-file download). Override via UCO3D_DL_WORKERS / UCO3D_EXTRACT_WORKERS.
 uv_py "$REPO_DIR/dataset_download/download_dataset.py" \
     --download_folder "$DEST_DIR" \
     --checksum_check \
     --use_huggingface \
+    --n_download_workers "${UCO3D_DL_WORKERS:-24}" \
+    --n_extract_workers "${UCO3D_EXTRACT_WORKERS:-8}" \
     "${@:2}"
 
 log "Done."
