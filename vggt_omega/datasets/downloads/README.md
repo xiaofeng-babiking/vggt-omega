@@ -100,7 +100,7 @@ manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 
 | Script | Source | Access |
 |---|---|---|
-| `gated/download_dl3dv.sh` | gated HF `DL3DV/*` | Gated HF + token |
+| `gated/download_dl3dv.sh` | gated HF `DL3DV/DL3DV-ALL-<RES>` per-scene zips (`fetch_aria2` direct to HF mirror) | Gated HF + token |
 | `gated/download_midair.sh` | checkbox config + helper script | Manual config step |
 | `gated/download_dynamic_replica.sh` | project `links.json` + script | License click |
 | `gated/download_sail_vos.sh` | project `download_sailvos.sh` | License click |

@@ -80,8 +80,11 @@ require_cmd() {
 # chain, and wget won't fetch the missing issuer via AIA the way curl/OpenSSL
 # does -- so wget reports "unable to verify the issuer's authority" while curl
 # verifies fine. Certificate verification stays ON in both paths.
+# Optional extra request headers (gated HF repos): set the FETCH_HEADERS array
+# before calling, e.g. FETCH_HEADERS=("Authorization: Bearer $TOKEN"); honored
+# by fetch(), fetch_retry() and fetch_aria2().
 fetch() {
-    local url="$1" out="$2"
+    local url="$1" out="$2" hdr
     # Route huggingface.co URLs through the configured HF_ENDPOINT mirror
     # (defaults to hf-mirror.com). Leaves all other hosts untouched.
     # --fail on the curl path: without it curl saves error bodies (404 HTML
@@ -95,11 +98,15 @@ fetch() {
         esac
     fi
     if command -v wget >/dev/null 2>&1; then
-        wget --continue --tries=5 --timeout=60 -O "$out" "$url" && return 0
+        local wargs=(--continue --tries=5 --timeout=60)
+        for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do wargs+=(--header="$hdr"); done
+        wget "${wargs[@]}" -O "$out" "$url" && return 0
         command -v curl >/dev/null 2>&1 && warn "wget failed for $url -- falling back to curl"
     fi
     if command -v curl >/dev/null 2>&1; then
-        curl -L --fail --retry 5 --continue-at - -o "$out" "$url" && return 0
+        local cargs=(-L --fail --retry 5 --continue-at -)
+        for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do cargs+=(-H "$hdr"); done
+        curl "${cargs[@]}" -o "$out" "$url" && return 0
         return 1
     fi
     command -v wget >/dev/null 2>&1 || die "neither wget nor curl is available"
@@ -130,7 +137,7 @@ fetch_retry() {
 # callers must use this for every attempt on a given file.
 # Usage: fetch_aria2 <url> <out_path> [attempts]   (default $FETCH_RETRIES or 20)
 fetch_aria2() {
-    local url="$1" out="$2" tries="${3:-${FETCH_RETRIES:-20}}" i
+    local url="$1" out="$2" tries="${3:-${FETCH_RETRIES:-20}}" i hdr
     if ! command -v aria2c >/dev/null 2>&1; then
         fetch_retry "$url" "$out" "$tries"
         return
@@ -142,6 +149,7 @@ fetch_aria2() {
                 --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
                 --lowest-speed-limit=800K
                 -d "$(dirname "$out")" -o "$(basename "$out")")
+    for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do args+=(--header="$hdr"); done
     for ((i = 1; i <= tries; i++)); do
         aria2c "${args[@]}" --all-proxy="" "$url" && return 0
         warn "aria2c direct attempt $i/$tries failed for $url -- retrying via proxy"
