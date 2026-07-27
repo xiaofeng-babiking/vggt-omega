@@ -33,8 +33,9 @@ DATA_ROOT="${DATA_ROOT:-$DOWNLOAD_ROOT}"
 
 # HuggingFace endpoint. Defaults to the China mirror (hf-mirror.com) so HF-backed
 # downloads work fast/reliably from mainland China. This single var is honored by
-# huggingface_hub / huggingface-cli (megasynth, wildrgbd, uco3d --use_huggingface)
-# AND by fetch() below, which rewrites direct huggingface.co URLs (mvs_synth) to it.
+# huggingface_hub / huggingface-cli (uco3d --use_huggingface), by fetch() below
+# (which rewrites direct huggingface.co URLs to it, e.g. mvs_synth), and by the
+# resolve/main base URLs built in download_dl3dv.sh / download_megasynth.sh.
 # Override to use the official site:  export HF_ENDPOINT=https://huggingface.co
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
@@ -144,10 +145,13 @@ fetch_aria2() {
     fi
     # --lowest-speed-limit: some hosts (Cornell) shed connections over time
     # until one slow stream remains; aborting below the floor makes the retry
-    # loop reconnect at full width instead of limping for days.
+    # loop reconnect at full width instead of limping for days. Tune via
+    # ARIA2_SPEED_FLOOR: scripts that run many fetch_aria2 workers in parallel
+    # (dl3dv) must lower it, since per-download speed divides across workers
+    # and a too-high floor makes every transfer abort in a churn loop.
     local args=(-c -x 8 -s 8 --file-allocation=none --console-log-level=warn
                 --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
-                --lowest-speed-limit=800K
+                --lowest-speed-limit="${ARIA2_SPEED_FLOOR:-800K}"
                 -d "$(dirname "$out")" -o "$(basename "$out")")
     for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do args+=(--header="$hdr"); done
     for ((i = 1; i <= tries; i++)); do
@@ -228,6 +232,10 @@ uv_pip() {
 
 # huggingface-cli download wrapper for ungated public datasets, run inside the
 # dataset's uv env (which must depend on huggingface_hub[cli]).
+# WARNING: the hf CLI (hf-xet) cannot fetch Xet-backed files through hf-mirror
+# ("Local entry not found"). Check the repo's tree API for "xetHash" entries
+# first -- if present, use fetch_aria2 on resolve/main URLs instead (see
+# download_megasynth.sh / download_dl3dv.sh / download_wildrgbd.sh).
 # Args: <repo_id> <dest> [extra args...]
 hf_download() {
     local repo="$1" dest="$2"; shift 2

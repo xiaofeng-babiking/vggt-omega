@@ -39,6 +39,11 @@ RES="${RES:-960P}"
 SUBSET="${SUBSET:-all}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-0}"
+# cas-bridge throttles per connection (~150 KB/s) and WORKERS downloads share
+# the pipe, so per-download speed sits far below the default 800K floor --
+# which then aborts every transfer in a churn loop. 100K still catches
+# genuinely stalled (0 B/s) connections.
+export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-100K}"
 
 HF_REPO="DL3DV/DL3DV-ALL-$RES"
 BASE_URL="${HF_ENDPOINT%/}/datasets/$HF_REPO/resolve/main"

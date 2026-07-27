@@ -82,7 +82,7 @@ manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 | `open/download_megadepth.sh` | Cornell direct wget | Open |
 | `open/download_hypersim.sh` | Apple CDN per-scene `.zip` (direct wget; URL list from `apple/ml-hypersim`) | Open |
 | `open/download_replica.sh` | GitHub release tarballs | Open |
-| `open/download_megasynth.sh` | HF `hwjiang/MegaSynth` | Open |
+| `open/download_megasynth.sh` | HF `hwjiang/MegaSynth` split zips (`fetch_aria2` direct to HF mirror) | Open |
 | `open/download_mvs_synth.sh` | HF `phuang17/MVS-Synth` | Open |
 | `open/download_eden.sh` | UvA ISIS direct wget | Open |
 | `open/download_paralleldomain4d.sh` | TRI public S3 | Open |
