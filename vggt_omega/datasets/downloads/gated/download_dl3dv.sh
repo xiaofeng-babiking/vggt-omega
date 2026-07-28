@@ -41,9 +41,11 @@ WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-0}"
 # cas-bridge throttles per connection (~150 KB/s) and WORKERS downloads share
 # the pipe, so per-download speed sits far below the default 800K floor --
-# which then aborts every transfer in a churn loop. 100K still catches
-# genuinely stalled (0 B/s) connections.
-export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-100K}"
+# which then aborts every transfer in a churn loop. But too low a floor lets
+# decayed CN:1 downloads limp at ~100 KB/s forever (observed at 100K): 200K
+# sits between the limp band (~90-150K) and the healthy band (300K-1.2M), so
+# limpers get reaped and reconnect at full width without churning the rest.
+export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-200K}"
 
 HF_REPO="DL3DV/DL3DV-ALL-$RES"
 BASE_URL="${HF_ENDPOINT%/}/datasets/$HF_REPO/resolve/main"
