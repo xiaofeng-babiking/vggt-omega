@@ -87,7 +87,10 @@ megasynth_file() {
 }
 
 export MS_OUT="$DEST_DIR" MS_BASE="$BASE_URL" MS_FAIL="$FAIL_LOG"
-export DATASET_NAME HF_ENDPOINT ARIA2_SPEED_FLOOR FETCH_RETRIES="${FETCH_RETRIES:-20}"
+# 40 GB splits need a much larger retry budget than the common default 20:
+# cas-bridge drops connections every few GB, and at throttled speeds a single
+# split spans days -- 20 aria2c restarts get exhausted mid-file.
+export DATASET_NAME HF_ENDPOINT ARIA2_SPEED_FLOOR FETCH_RETRIES="${FETCH_RETRIES:-200}"
 export -f megasynth_file fetch_aria2 fetch_retry fetch log warn err die
 
 xargs -n 2 -P "$WORKERS" bash -c 'megasynth_file "$@"' _ <"$LIST" || true
