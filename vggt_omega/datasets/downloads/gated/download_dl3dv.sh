@@ -40,12 +40,14 @@ SUBSET="${SUBSET:-all}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-0}"
 # cas-bridge throttles per connection (~150 KB/s) and WORKERS downloads share
-# the pipe, so per-download speed sits far below the default 800K floor --
-# which then aborts every transfer in a churn loop. But too low a floor lets
-# decayed CN:1 downloads limp at ~100 KB/s forever (observed at 100K): 200K
-# sits between the limp band (~90-150K) and the healthy band (300K-1.2M), so
-# limpers get reaped and reconnect at full width without churning the rest.
-export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-200K}"
+# the per-IP pipe -- with every OTHER fleet on this box (uco3d, taskonomy,
+# other users) too. A floor above the current fair share makes every transfer
+# churn-abort; 200K did exactly that and failed scenes out when a second
+# fleet ramped up. 100K only reaps hard stalls: downloads may limp during
+# contention but always survive, and the large FETCH_RETRIES below means
+# churn phases can never exhaust a scene's retry budget.
+export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-100K}"
+export FETCH_RETRIES="${FETCH_RETRIES:-200}"
 
 HF_REPO="DL3DV/DL3DV-ALL-$RES"
 BASE_URL="${HF_ENDPOINT%/}/datasets/$HF_REPO/resolve/main"
