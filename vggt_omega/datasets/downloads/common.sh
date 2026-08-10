@@ -149,7 +149,11 @@ fetch_aria2() {
     # ARIA2_SPEED_FLOOR: scripts that run many fetch_aria2 workers in parallel
     # (dl3dv) must lower it, since per-download speed divides across workers
     # and a too-high floor makes every transfer abort in a churn loop.
-    local args=(-c -x 8 -s 8 --file-allocation=none --console-log-level=warn
+    # ARIA2_CONNS: segmented connections per download (default 8). Hosts whose
+    # redirect signatures pin an exact byte range (HF Xet cas-bridge) 403 every
+    # connection but the first -- set 1 there and scale workers instead.
+    local conns="${ARIA2_CONNS:-8}"
+    local args=(-c -x "$conns" -s "$conns" --file-allocation=none --console-log-level=warn
                 --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
                 --lowest-speed-limit="${ARIA2_SPEED_FLOOR:-800K}"
                 -d "$(dirname "$out")" -o "$(basename "$out")")

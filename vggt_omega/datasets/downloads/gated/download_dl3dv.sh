@@ -18,7 +18,8 @@
 #   SUBSET=all     "all" (batches 1K..11K, 10221 scenes; the CSV's extra
 #                  'problem' batch has no downloadable zips) or a comma/space
 #                  list of batches, e.g. "1K,2K"
-#   WORKERS=8      concurrent scenes (each scene is an 8-way aria2c)
+#   WORKERS=24     concurrent scenes (each a single-connection aria2c; see
+#                  the ARIA2_CONNS note below)
 #   LIMIT=0        >0 caps scenes per batch (smoke tests)
 DATASET_NAME="dl3dv"
 source "$(dirname "$0")/../common.sh"
@@ -37,16 +38,21 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 
 RES="${RES:-960P}"
 SUBSET="${SUBSET:-all}"
-WORKERS="${WORKERS:-8}"
+WORKERS="${WORKERS:-24}"
 LIMIT="${LIMIT:-0}"
-# cas-bridge throttles per connection (~150 KB/s) and WORKERS downloads share
-# the per-IP pipe -- with every OTHER fleet on this box (uco3d, taskonomy,
-# other users) too. A floor above the current fair share makes every transfer
-# churn-abort; 200K did exactly that and failed scenes out when a second
-# fleet ramped up. 100K only reaps hard stalls: downloads may limp during
-# contention but always survive, and the large FETCH_RETRIES below means
-# churn phases can never exhaust a scene's retry budget.
-export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-100K}"
+# cas-bridge signs each resolve redirect for ONE exact byte range
+# (Policy.ByteRange in the presigned URL): with segmented downloads every
+# connection but the first gets 403 and scenes churn their retry budgets to
+# death. Single-connection per scene avoids that; WORKERS provides the
+# parallelism instead.
+export ARIA2_CONNS="${ARIA2_CONNS:-1}"
+# cas-bridge also throttles per connection, and WORKERS downloads share the
+# per-IP pipe with every other fleet on this box. A floor above the current
+# fair share makes every transfer churn-abort (200K and 100K both did, as
+# contention shifted). With one connection per scene a reap is cheap -- the
+# retry resumes at the same offset off a fresh redirect -- so the floor only
+# needs to catch near-dead connections: 30K.
+export ARIA2_SPEED_FLOOR="${ARIA2_SPEED_FLOOR:-30K}"
 export FETCH_RETRIES="${FETCH_RETRIES:-200}"
 
 HF_REPO="DL3DV/DL3DV-ALL-$RES"
@@ -129,11 +135,25 @@ dl3dv_scene() {
     fi
     local tmp="$DL3DV_OUT/$batch/.extract_$hash"
     rm -rf "$tmp"
-    if unzip -q "$zip" -d "$tmp" && [ -d "$tmp/$hash" ]; then
+    local rc=0
+    unzip -q "$zip" -d "$tmp" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        warn "unzip rc=$rc for $batch/$hash.zip -- deleting corrupt zip (re-run to re-download)"
+        rm -rf "$tmp" "$zip" "$zip.aria2"
+        printf '%s/%s\n' "$batch" "$hash" >>"$DL3DV_FAIL"
+        return 1
+    fi
+    # Zip layout is not uniform across batches: most pack <hash>/ at the
+    # root, but some (seen in 8K+) pack the scene contents directly.
+    if [ -d "$tmp/$hash" ]; then
         mv "$tmp/$hash" "$sdir"
         rm -rf "$tmp" "$zip"
+    elif [ -n "$(ls -A "$tmp" 2>/dev/null)" ]; then
+        warn "$batch/$hash.zip has no top-level $hash/ (root: $(ls "$tmp" | head -4 | tr '\n' ' ')) -- using zip root as scene dir"
+        mv "$tmp" "$sdir"
+        rm -f "$zip"
     else
-        warn "unzip failed for $batch/$hash.zip -- deleting corrupt zip (re-run to re-download)"
+        warn "unzip produced an empty tree for $batch/$hash.zip -- deleting zip (re-run to re-download)"
         rm -rf "$tmp" "$zip" "$zip.aria2"
         printf '%s/%s\n' "$batch" "$hash" >>"$DL3DV_FAIL"
         return 1
