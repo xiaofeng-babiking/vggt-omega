@@ -35,6 +35,29 @@ def _dtype(name):
     return _DTYPES[name]
 
 
+def resolve_hybrid_shard(value, *, world_size, local_world_size=None) -> bool:
+    """Resolve the ``fsdp.hybrid_shard`` config value (true/false/'auto') to a bool.
+
+    'auto' turns HSDP on exactly when the run spans more than one node
+    (``world_size > local_world_size``), so one config scales from a single node
+    to many with no edits: single node stays a plain 1-D full shard, multi-node
+    shards intra-node and replicates across nodes. When ``local_world_size`` is
+    unknown (mp.spawn tests, world=1 fallback), 'auto' resolves to off.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no", "none", ""):
+        return False
+    if text == "auto":
+        return local_world_size is not None and world_size > int(local_world_size)
+    raise ValueError(f"fsdp.hybrid_shard must be true, false or 'auto', got {value!r}")
+
+
 def build_dp_mesh(world_size, *, hybrid_shard=False, shard_size=None, device_type="cuda") -> DeviceMesh:
     """Data-parallel DeviceMesh.
 

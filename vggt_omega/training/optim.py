@@ -3,14 +3,43 @@ import math
 import torch
 
 
-def build_param_groups(model, weight_decay):
-    decay, no_decay = [], []
+#: Modules trained from scratch when the rest of the model is a pretrained
+#: checkpoint. The released VGGT-Omega weights carry no gaussian head, so these
+#: start from random init while the backbone only needs nudging.
+FROM_SCRATCH_PREFIXES = ("gs_dpt_head.", "gs_decoder.")
+
+
+def build_param_groups(model, weight_decay, lr=None, scratch_lr_mult=1.0):
+    """Parameter groups split by weight decay, and optionally by learning rate.
+
+    ``scratch_lr_mult`` scales the LR of :data:`FROM_SCRATCH_PREFIXES` relative
+    to ``lr``. One LR for the whole model is wrong when part of it is pretrained
+    and part is not: at a rate that merely fine-tunes a 1B backbone, a randomly
+    initialised head barely moves, and it stays under-trained for the whole run
+    while the loss curve looks reasonable. Requires ``lr`` when the multiplier
+    is not 1.0, since a group's LR has to be written as an absolute value.
+
+    LambdaLR scales each group's own ``initial_lr``, so the warmup-cosine
+    schedule applies on top of the per-group rate rather than flattening it.
+    """
+    if scratch_lr_mult != 1.0 and lr is None:
+        raise ValueError("build_param_groups needs lr= to apply scratch_lr_mult")
+
+    buckets = {}
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        (no_decay if p.ndim <= 1 or "token" in name else decay).append(p)
-    return [{"params": decay, "weight_decay": weight_decay},
-            {"params": no_decay, "weight_decay": 0.0}]
+        scratch = name.startswith(FROM_SCRATCH_PREFIXES)
+        no_decay = p.ndim <= 1 or "token" in name
+        buckets.setdefault((scratch, no_decay), []).append(p)
+
+    groups = []
+    for (scratch, no_decay), params in sorted(buckets.items()):
+        group = {"params": params, "weight_decay": 0.0 if no_decay else weight_decay}
+        if scratch and scratch_lr_mult != 1.0:
+            group["lr"] = lr * scratch_lr_mult
+        groups.append(group)
+    return groups
 
 
 def build_warmup_cosine(optimizer, max_steps, warmup_frac=0.05, min_lr_ratio=0.0):

@@ -14,6 +14,7 @@ _EVO_SETTINGS.plot_backend = "Agg"
 
 from vggt_omega.evaluates.base_metric import BaseMetric, metric
 from vggt_omega.evaluates.camera_pose import CameraPoseMetric
+from vggt_omega.evaluates.photometric import dump_render_comparison, per_view_metrics
 from vggt_omega.evaluates.mono_depth import MonoDepthMetric
 from vggt_omega.evaluates.pointcloud import PointcloudMetric
 
@@ -23,4 +24,6 @@ __all__ = [
     "CameraPoseMetric",
     "MonoDepthMetric",
     "PointcloudMetric",
+    "dump_render_comparison",
+    "per_view_metrics",
 ]
