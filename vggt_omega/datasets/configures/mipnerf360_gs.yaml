@@ -1,0 +1,94 @@
+# Per-dataset configure for inference.py --enable_3dgs (mip-NeRF-360, 3DGS).
+#
+# Scene-agnostic: `sequences` below is only the default. Point it at any scene of
+# a multi-scene run with --sequences (e.g. --sequences bicycle) rather than
+# copying this file per scene -- everything else here is about the 3DGS stage,
+# not the scene.
+#
+# Same dataset contract as mipnerf360.yaml, retuned for the feed-forward gaussian
+# stage, which is memory-bound rather than throughput-bound:
+#
+#   * 16 frames, not all 185 -- 3DGS memory scales with views x pixels x SH
+#     coefficients, and a 16-view scene at 512 already peaks near 14 GB.
+#   * image_scale 0.4 -> 512 long side, the resolution the model was TRAINED at.
+#     mipnerf360.yaml ships 1.0 (1296 px) because pose/depth eval wants native
+#     resolution; the gaussian head has only ever seen 512.
+#   * frames drawn at random from the every-8th pool, which is mip-NeRF-360's
+#     convention test split -- the frames its published numbers are computed over.
+#
+# Honest scope: MipNerf360Sequence has no split handling, and the off-the-grid
+# runs draw random windows over every frame, so no frame is provably unseen. This
+# is "held out by convention", not "held out in fact" -- and the 3DGS metrics are
+# a SELF-RENDER of these same views either way. See inference.py's docstring.
+#
+#   python inference.py --configure vggt_omega/datasets/configures/mipnerf360_gs.yaml \
+#       --checkpoint <run>/trainer_step005000.pt --enable_3dgs --gs_sh_degree 3 \
+#       --sequences bicycle \
+#       --output_root outputs/gs_bicycle --dump_per_frame --gs_per_frame_ply
+
+# --- ComposedDataset: the training loader, instantiated for eval -------------
+dataset:
+  _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+  dataset_configs:
+    - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+      sequence_cls:
+        _target_: hydra.utils.get_class
+        path: vggt_omega.datasets.sequences.mipnerf360.MipNerf360Sequence
+      split: train
+      # Machine-specific path -- override for your environment.
+      data_root: /jfs/jing.feng/datasets/mipnerf360
+      sequences: ["garden"]
+      min_num_images: 24
+      sequence_kwargs:
+        sparse_dir: sparse/0
+        # images_4 = 1297x840; image_scale 0.4 -> 512 long side.
+        scale_factor: 4
+
+# --- common_config: shared tensorization, with deterministic-eval overrides --
+common_config:
+  img_size: 512
+  patch_size: 16
+  fix_img_num: -1
+  fix_aspect_ratio: 1.0
+  load_track: false         # COLMAP: no 2D tracks
+  track_num: 1024
+  training: false           # eval: no scale/colour augmentation
+  inside_random: false      # eval: honor explicit seq_index / ids
+  rescale: true
+  rescale_aug: false        # eval: deterministic resize
+  landscape_check: false
+  debug: false
+  get_nearby: false         # eval: use our ordered ids verbatim
+  load_depth: false         # mip-NeRF-360 ships no depth (photogrammetry, no sensor)
+  img_nums: [2, 24]
+  max_img_per_gpu: 48
+  allow_duplicate_img: false
+  repeat_batch: false
+  augs:
+    cojitter: true
+    cojitter_ratio: 0.3
+    scales: null            # eval: no scale augmentation
+    aspects: [0.33, 1.0]
+    color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+    gray_scale: true
+    gau_blur: false
+
+# --- inference: dataset sampling / resolution knobs --------------------------
+inference:
+  # Views per sequence. Bounded by 3DGS memory, not by the aggregator.
+  num_frames: 16
+  # ABSOLUTE target long side, snapped to /16 -- 512 is the model's trained
+  # resolution. Stated absolutely and not as image_scale because mip-NeRF-360's
+  # images_4 is a different width per scene (garden 1297, bicycle 1237), so the
+  # image_scale 0.4 that hits 512 on garden gives 496 on bicycle: off
+  # distribution, and not comparable between scenes. long_side wins over
+  # image_scale below; an explicit --image_scale on the CLI wins over both.
+  long_side: 512
+  # Kept as the fallback for callers that pass --image_scale for a sweep.
+  image_scale: 0.4
+  # Candidate pool = every Nth frame. 8 is mip-NeRF-360's convention test split.
+  frame_stride: 8
+  # "linspace" (evenly spaced) or "random" (seeded draw from the pool).
+  frame_sampling: random
+  # Seeds the draw. Fixed across ranks, so the distributed path agrees.
+  seed: 0

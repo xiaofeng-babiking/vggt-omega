@@ -13,10 +13,11 @@ per-vendor dataset class. It discovers the vendor's sequences, constructs a
 :class:`BaseSequence` per sequence on demand (cached), and builds each frame by
 composing the sequence getters with :meth:`process_one_image` (the one numpy<-pose
 boundary: a frame's camera-to-world pose becomes the w2c OpenCV ``[R|t]`` extrinsic).
-Frame selection for a batch uses the **SE(3) arc-length sampler** over a *random*
-``[start, end]`` window (see
-:func:`~vggt_omega.datasets.samplers.se3_sampler.sample_se3_trajectory`), so batches
-skip low-motion stretches; the randomness is the window, exactly as the sampler intends.
+Frame selection for a batch uses a config-selectable sampler (``frame_sampler``:
+``"se3"`` equal SE(3) arc-length — the default, ``"random"`` uniform indices, or
+``"se3_random"`` motion-weighted random draw) over a *random* ``[start, end]``
+window, so batches skip low-motion stretches; the window is the shared source of
+range randomness.
 
 This module replaces the old ``base_dataset.py`` abstract base: image resizing,
 augmentation and the depth->world/cam coordinate conversion (formerly
@@ -35,10 +36,25 @@ from torch.utils.data import Dataset
 from vggt_omega.datasets.sequences.base_sequence import BaseSequence, Modality
 from .dataset_util import *  # noqa: F401,F403  (crop/resize/rotate helpers)
 from .dataset_util import depth_to_world_coords_points
-from vggt_omega.datasets.samplers.se3_sampler import sample_se3_trajectory
+from vggt_omega.datasets.samplers import (
+    sample_frame_indices,
+    sample_se3_random,
+    sample_se3_trajectory,
+)
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# Config-selectable frame samplers. All share the
+# (seq, sensor, num, start, end) -> (indices, distances) contract:
+#   "se3"        deterministic equal SE(3) arc-length spacing (may dedup < num)
+#   "random"     uniform random indices, motion-blind (exactly num)
+#   "se3_random" motion-weighted random draw, arbitrary spacing (exactly num)
+_FRAME_SAMPLERS = {
+    "se3": sample_se3_trajectory,
+    "random": sample_frame_indices,
+    "se3_random": sample_se3_random,
+}
 
 
 def _resolve_sequence_cls(ref) -> Type[BaseSequence]:
@@ -61,7 +77,7 @@ class SequenceDataset(Dataset):
     per-vendor dataset class. Sequence discovery and per-sequence construction both
     go through that class (``sequence_cls.discover`` /
     ``sequence_cls(data_root, seq_id, **sequence_kwargs)``); frame batches are
-    sampled with the SE(3) arc-length sampler over a random ``[start, end]`` window.
+    sampled with the configured ``frame_sampler`` over a random ``[start, end]`` window.
 
     Shared image processing (resize/crop/augment + depth->world/cam coordinate
     conversion) lives directly on this class (formerly ``BaseDataset``).
@@ -78,6 +94,7 @@ class SequenceDataset(Dataset):
         mixture_weight: float = 1.0,
         split: str = "train",
         min_num_images: int = 2,
+        frame_sampler: str = "se3",
         seq_name_prefix: Optional[str] = None,
     ):
         super().__init__()
@@ -101,6 +118,11 @@ class SequenceDataset(Dataset):
         self.data_root = data_root
         self.sequence_kwargs = dict(sequence_kwargs or {})
         self.min_num_images = int(min_num_images)
+        if frame_sampler not in _FRAME_SAMPLERS:
+            raise ValueError(
+                f"frame_sampler must be one of {sorted(_FRAME_SAMPLERS)}, got {frame_sampler!r}"
+            )
+        self.frame_sampler = frame_sampler
 
         # --- mixture weighting -------------------------------------------------
         # ``__len__`` is this vendor's slice of one virtual epoch; with
@@ -152,12 +174,31 @@ class SequenceDataset(Dataset):
         seq = self._sequence(self.sequence_list[local_idx])
         return seq.get_rgb_size(self._sensor(seq))
 
+    def sequence_pointcloud(self, local_idx: int = 0):
+        """Vendor's sparse cloud ``(N, 3)`` for a sequence, or ``None``.
+
+        Only some vendors have one -- a COLMAP model carries ``points3D``, a
+        depth-sensor dataset does not -- so callers that want an SfM
+        initialization can ask without knowing the vendor. ``None`` rather than
+        raising, since "this dataset has no sparse cloud" is an ordinary answer.
+        """
+        seq = self._sequence(self.sequence_list[local_idx])
+        getter = getattr(seq, "get_pointcloud", None)
+        if getter is None:
+            return None
+        try:
+            return getter(self._sensor(seq))
+        except NotImplementedError:
+            return None
+
     # ------------------------------------------------------------------ #
     # frame sampling
     # ------------------------------------------------------------------ #
-    def _se3_sample_ids(self, seq: BaseSequence, sensor, num: int) -> np.ndarray:
-        """SE(3) arc-length sample ``num`` frame ids over a RANDOM ``[start, end]``
-        window of the sequence (the sampler's intended source of randomness)."""
+    def _sample_ids(self, seq: BaseSequence, sensor, num: int) -> np.ndarray:
+        """Sample ``num`` frame ids with the configured ``frame_sampler`` over a
+        RANDOM ``[start, end]`` window of the sequence (the window is the shared
+        source of range randomness; "se3_random"/"random" add draw randomness on
+        top)."""
         n = seq.get_length(sensor)
         if num >= n:
             return np.arange(n)
@@ -169,16 +210,18 @@ class SequenceDataset(Dataset):
             end = start + span - 1
         else:
             start, end = 0, n - 1
-        # The sampler reads poses on demand via seq.get_pose(sensor, k) for ONLY
-        # the [start, end] window (was: eager load of ALL n poses per sample, one
-        # disk read per frame of the whole sequence on per-frame-file vendors).
-        indices, _ = sample_se3_trajectory(seq, sensor, num=num, start=start, end=end)
+        # The sampler reads poses for ONLY the [start, end] window (except
+        # "random", which reads none).
+        indices, _ = _FRAME_SAMPLERS[self.frame_sampler](
+            seq, sensor, num=num, start=start, end=end
+        )
         ids = [int(i) for i in indices]
-        # sample_se3_trajectory de-duplicates equal-arc-length targets that snap to
-        # the same frame across a low-motion stretch, so it can return < num ids.
-        # But train_collate stacks each batch assuming every sample has exactly `num`
-        # frames (DynamicBatchSampler draws one count per batch); a short sample
-        # breaks the stack. The [start, end] window spans >= num frames, so top up to
+        # "se3" de-duplicates equal-arc-length targets that snap to the same
+        # frame across a low-motion stretch, so it can return < num ids; the
+        # other samplers always return exactly num (no-op below). train_collate
+        # stacks each batch assuming every sample has exactly `num` frames
+        # (DynamicBatchSampler draws one count per batch); a short sample breaks
+        # the stack. The [start, end] window spans >= num frames, so top up to
         # exactly `num` from its still-unused frames (kept distinct and ordered).
         if len(ids) < num:
             chosen = set(ids)
@@ -213,7 +256,7 @@ class SequenceDataset(Dataset):
 
         if ids is None:
             num = int(img_per_seq) if img_per_seq else min(2, n)
-            ids = self._se3_sample_ids(seq, sensor, num)
+            ids = self._sample_ids(seq, sensor, num)
         ids = np.asarray(ids, dtype=int)
 
         target_image_shape = self.get_target_shape(aspect_ratio)

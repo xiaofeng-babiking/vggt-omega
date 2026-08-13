@@ -11,6 +11,7 @@ import logging
 import torch
 import random
 import numpy as np
+from omegaconf import OmegaConf
 from torch.utils.data import Dataset
 from torch.utils.data import ConcatDataset
 import bisect
@@ -311,6 +312,49 @@ class ComposedDataset(Dataset, ABC):
         vendor, local_idx, _ = self.sequence_index[seq_index]
         return vendor.sequence_num_frames(local_idx)
 
+    def resolve_frame_ids(self, seq_index, inference_cfg, num_frames_override=None):
+        """Ordered frame ids to evaluate for one sequence, from a configure's
+        ``inference`` block.
+
+        ``frame_stride`` first narrows the candidate pool to every Nth frame --
+        stride 8 is mip-NeRF-360's convention test split, the frames its published
+        numbers are computed over. ``frame_sampling`` then takes ``num_frames``
+        from that pool: ``linspace`` evenly spaced (the default, and the historical
+        behaviour) or ``random``, a draw seeded by ``inference.seed``.
+        ``num_frames_override`` replaces ``inference.num_frames`` when not None.
+
+        Lives here rather than in an entrypoint because more than one process has
+        to agree on it: any baseline compared against an inference run must fit the
+        SAME frames, and a second copy of this rule is how two arms silently end up
+        on different ones.
+
+        The ids are always SORTED. That is not cosmetic -- the distributed path
+        shards by position in this list, so every rank must derive the identical
+        ordering, and the seeded ``torch.Generator`` (never a device or global RNG)
+        is what makes the random draw agree across ranks and across processes.
+        """
+        num_available = self.sequence_num_frames(seq_index)
+        stride = max(1, int(OmegaConf.select(inference_cfg, "frame_stride", default=1)))
+        pool = np.arange(0, num_available, stride)
+
+        num_frames = int(
+            inference_cfg.num_frames if num_frames_override is None else num_frames_override
+        )
+        if num_frames <= 0 or num_frames >= len(pool):
+            return pool  # every frame in the pool, ordered
+
+        sampling = str(OmegaConf.select(inference_cfg, "frame_sampling", default="linspace"))
+        if sampling == "linspace":
+            return pool[np.linspace(0, len(pool) - 1, num_frames).round().astype(int)]
+        if sampling == "random":
+            seed = int(OmegaConf.select(inference_cfg, "seed", default=0))
+            generator = torch.Generator().manual_seed(seed)
+            picked = torch.randperm(len(pool), generator=generator)[:num_frames].tolist()
+            return np.sort(pool[picked])
+        raise ValueError(
+            f"inference.frame_sampling must be 'linspace' or 'random', got {sampling!r}"
+        )
+
     def get_sample(self, seq_index, ids, aspect_ratio=1.0, num_workers=None):
         """Tensorized sample for EXPLICIT, ordered frame ``ids`` of one sequence --
         the training-identical inference path. Reuses ``_tensorize`` verbatim.
@@ -327,6 +371,13 @@ class ComposedDataset(Dataset, ABC):
             vendor, name, np.asarray(ids), aspect_ratio=aspect_ratio, num_workers=num_workers
         )
         return self._tensorize(batch)
+
+    def sequence_pointcloud(self, seq_index=0):
+        """Vendor's sparse point cloud ``(N, 3)`` for a global sequence index, or
+        ``None`` when that vendor has none (see ``SequenceDataset``)."""
+        vendor, local_idx, _ = self.sequence_index[seq_index]
+        getter = getattr(vendor, "sequence_pointcloud", None)
+        return getter(local_idx) if getter is not None else None
 
     def native_image_size(self, seq_index=0):
         """Native ``(H, W)`` of the source frames for a global sequence index --

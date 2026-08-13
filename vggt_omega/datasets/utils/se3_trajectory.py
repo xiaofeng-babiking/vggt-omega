@@ -53,8 +53,12 @@ class BaseSE3Trajectory(ABC):
         if isinstance(index, int):
             index = [index]
 
+        # A trajectory may carry no real timestamps (e.g. COLMAP poses are
+        # index-parameterised). Fall back to the parent frame indices as pseudo
+        # timestamps so the sub-trajectory stays orderable / indexable.
+        tstamps = self._tstamps if self._tstamps is not None else np.arange(len(self))
         return type(self)(
-            self._tstamps[index],
+            tstamps[index],
             self._poses[index],
             self._src,
             self._dst,

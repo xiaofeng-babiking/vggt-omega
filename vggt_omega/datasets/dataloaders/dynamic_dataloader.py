@@ -28,6 +28,8 @@ class DynamicTorchDataset(ABC):
         persistent_workers: bool = False,
         seed: int = 42,
         max_img_per_gpu: int = 48,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
     ) -> None:
         self.dataset_config = dataset
         self.common_config = common_config
@@ -54,8 +56,22 @@ class DynamicTorchDataset(ABC):
         if len(self.image_num_range) != 2 or self.image_num_range[0] < 1 or self.image_num_range[0] > self.image_num_range[1]:
             raise ValueError(f"image_num_range must be [min, max] with 1 <= min <= max, got {self.image_num_range}")
 
-        # Create samplers
-        self.sampler = DynamicDistributedSampler(self.dataset, seed=seed, shuffle=shuffle)
+        # Create samplers.
+        #
+        # num_replicas/rank default to the WORLD when left None, which is right
+        # for plain data parallelism. Under context parallelism they must be the
+        # dp axis of the (dp, cp) mesh instead: the ranks inside one CP group are
+        # shards of a single forward, so handing them different windows would make
+        # them assemble a scene out of unrelated parts (broadcast_sample then has
+        # to throw all but one away). Passing dp_size/dp_rank means each CP group
+        # draws one sample and the effective batch is dp_size.
+        self.sampler = DynamicDistributedSampler(
+            self.dataset,
+            seed=seed,
+            shuffle=shuffle,
+            num_replicas=num_replicas,
+            rank=rank,
+        )
         self.batch_sampler = DynamicBatchSampler(
             self.sampler,
             self.aspect_ratio_range,

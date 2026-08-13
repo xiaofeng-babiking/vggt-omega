@@ -1,0 +1,74 @@
+# Per-dataset configure for inference.py (single-device or --attn all_gather_kv|ring) (mip-NeRF-360, COLMAP).
+#
+# mip-NeRF-360 scenes are COLMAP sparse reconstructions (sparse/0/{cameras,images,
+# points3D}.bin) with multi-resolution image dirs (images, images_2/4/8). Loaded
+# via MipNerf360Sequence (ColmapSequence + scale_factor). The dataset is
+# photogrammetry: it has no depth sensor and no native depth map, and a sparse
+# model carries no tracks -- so only camera pose (ATE/RPE) is scored, and both
+# mono-depth and track eval self-skip (load_depth / load_track false).
+#
+# Mirrors tum.yaml (same common_config / inference contract) with the COLMAP
+# vendor swapped in. See vggt_omega/datasets/sequences/mipnerf360.py.
+
+# --- ComposedDataset: the training loader, instantiated for eval -------------
+dataset:
+  _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+  dataset_configs:
+    - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+      # BaseSequence backend (hydra class reference -- no per-vendor dataset class).
+      sequence_cls:
+        _target_: hydra.utils.get_class
+        path: vggt_omega.datasets.sequences.mipnerf360.MipNerf360Sequence
+      split: train
+      # Machine-specific path -- override for your environment.
+      data_root: /jfs/jing.feng/datasets/mipnerf360
+      # Sequences to run, as names or glob patterns (e.g. "garden", "bicycle").
+      # ["*"] = ALL scenes under data_root.
+      sequences: ["garden"]
+      min_num_images: 24
+      # Forwarded to MipNerf360Sequence(data_root, seq_id, **sequence_kwargs).
+      sequence_kwargs:
+        # COLMAP model sub-dir holding {cameras,images,points3D}.bin.
+        sparse_dir: sparse/0
+        # Image-pyramid level in {1,2,4,8}: 4 -> images_4 (1297x840); intrinsics
+        # auto-rescale to that resolution. image_scale 0.4 -> 512 long side.
+        scale_factor: 4
+
+# --- common_config: shared tensorization, with deterministic-eval overrides --
+# Mirrors tum.yaml; load_depth is true (MipNerf360Sequence provides sparse depth).
+common_config:
+  img_size: 512
+  patch_size: 16
+  fix_img_num: -1
+  fix_aspect_ratio: 1.0
+  load_track: false         # COLMAP: no 2D tracks
+  track_num: 1024
+  training: false           # eval: no scale/colour augmentation
+  inside_random: false      # eval: honor explicit seq_index / ids
+  rescale: true
+  rescale_aug: false        # eval: deterministic resize
+  landscape_check: false
+  debug: false
+  get_nearby: false         # eval: use our ordered ids verbatim
+  load_depth: false         # mip-NeRF-360 ships no depth (photogrammetry, no sensor)
+  img_nums: [2, 24]
+  max_img_per_gpu: 48
+  allow_duplicate_img: false
+  repeat_batch: false
+  augs:
+    cojitter: true
+    cojitter_ratio: 0.3
+    scales: null            # eval: no scale augmentation
+    aspects: [0.33, 1.0]
+    color_jitter: {brightness: 0.5, contrast: 0.5, saturation: 0.5, hue: 0.1, p: 0.9}
+    gray_scale: true
+    gau_blur: false
+
+# --- inference: dataset sampling / resolution knobs --------------------------
+inference:
+  # Frames per sequence. <=0 = ALL frames; otherwise this many, evenly spaced.
+  # garden has 185 registered images.
+  num_frames: -1
+  # Resolution scale factor on the images_dir native long side (images_4 = 1297),
+  # snapped to a /16 multiple. 0.4 -> 512 (the model's trained resolution).
+  image_scale: 1.0

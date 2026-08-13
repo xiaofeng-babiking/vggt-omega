@@ -288,6 +288,26 @@ class BaseSequence(ABC):
         intrinsic[3] *= sy  # cy
         return intrinsic
 
+    @staticmethod
+    def rescale_intrinsic(
+        intrinsic: np.ndarray,
+        src_size_wh: Tuple[int, int],
+        dst_size_wh: Tuple[int, int],
+    ) -> np.ndarray:
+        """Rescale ``[fx, fy, cx, cy]`` from ``src_size_wh`` to ``dst_size_wh`` (both ``(W, H)``).
+
+        Pure per-axis scaling: ``fx, cx`` scale with width, ``fy, cy`` with height.
+        A ``@staticmethod`` (no instance state) so it can run *during*
+        calibration-tree construction — e.g. rescaling a COLMAP intrinsic onto a
+        downsampled ``images_2/4/8`` resolution — where ``scaled_intrinsic`` (which
+        reads the not-yet-built tree) can't be called. Callers pass both sizes
+        explicitly, e.g. ``self.rescale_intrinsic(K, (w0, h0), (w, h))``.
+        """
+        fx, fy, cx, cy = np.asarray(intrinsic, dtype=np.float64)
+        (w0, h0), (w, h) = src_size_wh, dst_size_wh
+        sx, sy = w / float(w0), h / float(h0)
+        return np.array([fx * sx, fy * sy, cx * sx, cy * sy], dtype=np.float64)
+
     # -- per-sensor / per-sequence products ---------------------------------- #
     @abstractmethod
     def get_tracks(self, sensor_id: Union[int, str]) -> tuple[np.ndarray, np.ndarray]:

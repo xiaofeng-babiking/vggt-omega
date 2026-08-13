@@ -588,3 +588,163 @@ class TestIndexAddressing:
     def test_get_timestamp_addresses_by_position(self):
         seq = _IndexAddrSequence()
         assert seq.get_timestamp(0, 1) == 200.0
+
+
+# =========================================================================== #
+# rescale_intrinsic — pure per-axis scaling (usable during construction)
+# =========================================================================== #
+class TestRescaleIntrinsic:
+    """rescale_intrinsic scales fx,cx by width ratio and fy,cy by height ratio."""
+
+    K = np.array([3844.898776958602, 3852.356179237937, 2593.5, 1680.5])
+
+    def test_identity_when_sizes_match(self):
+        out = BaseSequence.rescale_intrinsic(self.K, (5187, 3361), (5187, 3361))
+        np.testing.assert_allclose(out, self.K, rtol=1e-12)
+
+    def test_quarter_scale_for_images_4(self):
+        out = BaseSequence.rescale_intrinsic(self.K, (5187, 3361), (1297, 840))
+        sx, sy = 1297 / 5187, 840 / 3361
+        np.testing.assert_allclose(
+            out, [self.K[0] * sx, self.K[1] * sy, self.K[2] * sx, self.K[3] * sy], rtol=1e-12
+        )
+
+    def test_per_axis_scales_independently(self):
+        # non-uniform target exercises fx/cx vs fy/cy separately
+        out = BaseSequence.rescale_intrinsic(self.K, (100, 100), (50, 25))
+        np.testing.assert_allclose(
+            out, [self.K[0] * 0.5, self.K[1] * 0.25, self.K[2] * 0.5, self.K[3] * 0.25],
+            rtol=1e-12,
+        )
+
+
+# =========================================================================== #
+# COLMAP — full vendor conformance against the real garden reconstruction
+# =========================================================================== #
+_COLMAP_ROOT = "/jfs/jing.feng/datasets/mipnerf360"  # real dataset; skipped if absent
+_COLMAP_SEQ = "garden"
+
+
+def _pycolmap_available() -> bool:
+    try:
+        import pycolmap  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(os.path.join(_COLMAP_ROOT, _COLMAP_SEQ)),
+    reason="garden COLMAP dataset not present",
+)
+@pytest.mark.skipif(not _pycolmap_available(), reason="pycolmap not installed")
+class TestColmapSequence(BaseSequenceContract):
+    """COLMAP conformance (via BaseSequenceContract) + vendor-specific checks.
+
+    Runs against the real garden reconstruction; skipped when the dataset or
+    pycolmap is unavailable (mirrors the _EVAL-absent pattern).
+    """
+
+    def make_sequence(self):
+        from vggt_omega.datasets.sequences.colmap import ColmapSequence
+
+        return ColmapSequence(_COLMAP_ROOT, _COLMAP_SEQ)
+
+    def test_single_camera_pinhole_intrinsic(self):
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        np.testing.assert_allclose(
+            np.asarray(s.get_intrinsic(sid)),
+            [3844.898776958602, 3852.356179237937, 2593.5, 1680.5],
+            rtol=1e-4,
+        )
+
+    def test_frame_count(self):
+        s = self.make_sequence()
+        assert s.get_length(s.get_sensors()[0]) == 185
+
+    def test_frame_names_are_positions(self):
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        assert list(s._manifest[sid][Modality.NAME]) == list(range(185))
+
+    def test_rgb_paths_are_sorted_colmap_filenames(self):
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        base = [os.path.basename(p) for p in s._manifest[sid][Modality.RGB]]
+        assert base[0] == "DSC07956.JPG" and base[-1] == "DSC08140.JPG"
+        assert base == sorted(base)
+
+    def test_pointcloud_shape(self):
+        s = self.make_sequence()
+        pc = s.get_pointcloud(s.get_sensors()[0])
+        assert pc.shape == (138766, 3) and pc.dtype == np.float32
+
+    def test_discover_finds_garden(self):
+        from vggt_omega.datasets.sequences.colmap import ColmapSequence
+
+        assert _COLMAP_SEQ in ColmapSequence.discover(_COLMAP_ROOT)
+
+    def test_images_4_rescales_intrinsic(self):
+        from vggt_omega.datasets.sequences.colmap import ColmapSequence
+
+        sid = self.make_sequence().get_sensors()[0]
+        Kf = np.asarray(self.make_sequence().get_intrinsic(sid), dtype=np.float64)
+        Kq = np.asarray(
+            ColmapSequence(_COLMAP_ROOT, _COLMAP_SEQ, images_dir="images_4").get_intrinsic(sid),
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(Kq / Kf, [0.25, 0.25, 0.25, 0.25], atol=3e-3)
+
+    def test_unsupported_getters_raise(self):
+        s = self.make_sequence()
+        sid = s.get_sensors()[0]
+        for fn in (
+            s.get_depth,
+            s.get_depth_confidence,
+            s.get_rgb_semantic_mask,
+            s.get_rgb_dynamic_mask,
+            s.get_rgb_valid_mask,
+        ):
+            with pytest.raises(NotImplementedError):
+                fn(sid, 0)
+        with pytest.raises(NotImplementedError):
+            s.get_tracks(sid)
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(os.path.join(_COLMAP_ROOT, _COLMAP_SEQ)),
+    reason="garden COLMAP dataset not present",
+)
+@pytest.mark.skipif(not _pycolmap_available(), reason="pycolmap not installed")
+class TestMipNerf360Sequence:
+    """The pyramid wrapper: scale_factor picks images_N and rescales intrinsics."""
+
+    def test_scale_factor_selects_pyramid_level_and_rescales(self):
+        from vggt_omega.datasets.sequences.mipnerf360 import MipNerf360Sequence
+
+        seq = MipNerf360Sequence(_COLMAP_ROOT, _COLMAP_SEQ, scale_factor=4)
+        sid = seq.get_sensors()[0]
+        assert seq.get_length(sid) == 185
+        # images_4 = 1297x840 on garden; intrinsics land at quarter scale.
+        h, w = seq.get_rgb_size(sid)
+        assert (w, h) == (1297, 840)
+        K = np.asarray(seq.get_intrinsic(sid), dtype=np.float64)
+        np.testing.assert_allclose(
+            K / np.array([3844.898776958602, 3852.356179237937, 2593.5, 1680.5]),
+            [0.25, 0.25, 0.25, 0.25],
+            atol=3e-3,
+        )
+
+    def test_rejects_unknown_scale_factor(self):
+        from vggt_omega.datasets.sequences.mipnerf360 import MipNerf360Sequence
+
+        with pytest.raises(ValueError, match="scale_factor"):
+            MipNerf360Sequence(_COLMAP_ROOT, _COLMAP_SEQ, scale_factor=3)
+
+    def test_no_depth_modality(self):
+        from vggt_omega.datasets.sequences.mipnerf360 import MipNerf360Sequence
+
+        seq = MipNerf360Sequence(_COLMAP_ROOT, _COLMAP_SEQ, scale_factor=8)
+        assert Modality.DEPTH not in seq.get_modalities(seq.get_sensors()[0])
