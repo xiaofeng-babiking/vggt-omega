@@ -4,7 +4,7 @@ import os
 import torch
 from omegaconf import OmegaConf
 
-from vggt_omega.datasets.track_util import build_tracks_by_depth
+from vggt_omega.training.tests._track_fixture import build_tracks_by_depth
 from vggt_omega.models import VGGTOmega
 from vggt_omega.training.tests.conftest import _intrinsics_for_scene, _random_consistent_scene
 from vggt_omega.training.trainer import Trainer

@@ -6,3 +6,22 @@ einops
 safetensors
 opencv-python
 colorlog
+
+# --- 3DGS path (feed-forward gaussian head + off-the-grid training) ----------
+# The project venv is uv.lock-managed and `uv sync` PRUNES ad-hoc extras, so
+# these live in scripts/install_3dgs_deps.sh (run it after every sync) rather
+# than the lockfile. Recorded here for what the 3DGS path needs:
+#
+# gsplat==1.5.3            CUDA rasterizer; REQUIRED (no CPU fallback). Compiles
+#                          its extension at first import against the pip CUDA
+#                          13.0 toolchain (nvidia-cuda-nvcc/nvvm/crt/cccl at a
+#                          MATCHED 13.0.x -- a 13.0 front-end with a 13.3 nvvm
+#                          emits PTX the 13.0 ptxas refuses) with CUDA_HOME
+#                          pointed at .venv/.../nvidia/cu13. Install everything
+#                          --no-deps: gsplat's unpinned `torch` dep once let a
+#                          resolver upgrade torch under a live session.
+# pycolmap==4.1.1          COLMAP .bin model reader (DataLoader workers)
+# lpips==0.1.4             perceptual term (weight 0.0 in shipped configs)
+# imagesize                header-only image dimension reads in dataset vendors
+# fused-ssim               OPTIONAL fused SSIM kernel; ssim_backend=auto falls
+#                          back to an exact torch reference when absent

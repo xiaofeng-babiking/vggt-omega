@@ -35,3 +35,38 @@ def test_build_dp_mesh_hybrid_requires_divisible_world():
 
 def test_grad_norm_to_float_plain_tensor():
     assert grad_norm_to_float(torch.tensor(3.5)) == pytest.approx(3.5)
+
+
+# --- resolve_hybrid_shard ---------------------------------------------------
+from vggt_omega.training.parallel import resolve_hybrid_shard  # noqa: E402
+
+
+def test_resolve_hybrid_shard_bool_passthrough():
+    assert resolve_hybrid_shard(True, world_size=8, local_world_size=8) is True
+    assert resolve_hybrid_shard(False, world_size=16, local_world_size=8) is False
+
+
+def test_resolve_hybrid_shard_none_is_false():
+    assert resolve_hybrid_shard(None, world_size=16, local_world_size=8) is False
+
+
+def test_resolve_hybrid_shard_strings():
+    assert resolve_hybrid_shard("true", world_size=8, local_world_size=8) is True
+    assert resolve_hybrid_shard("false", world_size=16, local_world_size=8) is False
+
+
+def test_resolve_hybrid_shard_auto_enables_on_multi_node():
+    assert resolve_hybrid_shard("auto", world_size=16, local_world_size=8) is True
+
+
+def test_resolve_hybrid_shard_auto_stays_off_on_single_node():
+    assert resolve_hybrid_shard("auto", world_size=8, local_world_size=8) is False
+
+
+def test_resolve_hybrid_shard_auto_without_local_world_stays_off():
+    assert resolve_hybrid_shard("auto", world_size=8, local_world_size=None) is False
+
+
+def test_resolve_hybrid_shard_rejects_unknown_value():
+    with pytest.raises(ValueError, match="hybrid_shard"):
+        resolve_hybrid_shard("maybe", world_size=8, local_world_size=8)

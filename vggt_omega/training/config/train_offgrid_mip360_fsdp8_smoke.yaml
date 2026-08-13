@@ -1,0 +1,145 @@
+# 8-GPU FSDP2 SMOKE of the off-the-grid 16+8 recipe on mip-NeRF-360 garden.
+#
+#   torchrun --standalone --nproc_per_node=8 train.py \
+#       --config vggt_omega/training/config/train_offgrid_mip360_fsdp8_smoke.yaml \
+#       --out_root outputs --run_name offgrid_smoke_fsdp8
+#
+# 30 steps to prove the plumbing end to end on this host: dataloader ->
+# teacher/student forwards -> gaussian decode -> gsplat render -> photometric +
+# anchor losses -> FSDP2 backward -> checkpoint + resume. The numbers to watch
+# are finite `total`, `gate_rate` near 1.0 (student == teacher at step 0, so the
+# Sim(3) fit is near-exact), and a `trainer_step000020.pt` pair on disk.
+#
+# The real run is train_offgrid_mipnerf360_all_50k.yaml; every training-relevant
+# knob here matches it (single scene + short horizon + tight logging aside), so
+# a green smoke transfers.
+#
+# Memory note for THIS HOST: the recipe was measured at ~53-56 GB/rank on the
+# sibling repo's 80 GB parts with the backbone frozen. A100s already carrying
+# other jobs (nvidia-smi) may not have that; the sanctioned fallback knobs are
+# common_config.img_size: 384 and/or img_nums: [16, 16] with n_target: 4 --
+# recipe knobs, not code changes.
+
+run:
+  output_dir: outputs/offgrid_mip360_fsdp8_smoke   # train.py overrides with --out_root/--run_name
+  max_steps: 30
+  log_interval: 1
+  img_log_interval: 0        # offgrid has no GT panel to log
+  val_interval: 0            # no GT poses used -- watch photo_target, not ATE
+  ckpt_interval: 20
+  keep_last: 2
+  seed: 42
+
+optim:
+  parallel: fsdp             # pure FSDP2 full shard over all 8 ranks (no CP here)
+  accumulate_steps: 1
+  lr: 1.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  fused: false               # parity with the sibling repo's runs; flip on to taste
+  grad_compression: none     # DDP-only knob; inert under FSDP (fsdp.reduce_dtype rules)
+
+fsdp:
+  reshard_after_forward: true
+  param_dtype: "none"        # heads force fp32 LayerNorm internally; casting params crashes the forward
+  reduce_dtype: bfloat16     # bf16 gradient reduction (MixedPrecisionPolicy)
+  hybrid_shard: false        # single node -> full shard over every rank
+  shard_size: null
+  cpu_offload: false
+
+selfsup:
+  enabled: true
+  mode: offgrid
+  n_target: 8                # 8 held-out target views; context M = S - 8 = 16
+  weights: {l1: 0.8, l2: 0.3, ssim: 0.3, lpips: 0.0}   # photometric terms
+  lpips_net: vgg             # inert at weight 0.0; vgg trunk downloads on first use
+  lpips_chunk_size: 2
+  target_weight: 1.0         # held-out views vs the self-render they sit alongside
+  # render_depth 0.1 anchors the RENDERED depth (post fusion/opacity/alpha
+  # compositing) to the teacher -- the two disagree when the depth map is right
+  # but the splats are too transparent or were fused away. Alpha-masked.
+  distill: {camera: 1.0, depth: 1.0, render_depth: 0.1}
+  conf_weighted_depth: true  # follow the teacher where the teacher is confident
+  rasterize_mode: classic    # matches the AnySplat weights the gaussian head starts from
+  ssim_backend: auto         # fused kernel if installed, torch reference otherwise
+  # Refuse gate thresholds, from the sibling repo's measured operating range
+  # (healthy drift residual <= 0.048; a real bad fit sat at 0.257).
+  gate:
+    max_scale_log: 0.25
+    max_rotation_deg: 15.0
+    max_residual: 0.15
+
+teacher:
+  mode: frozen               # supplies both the anchor and the trajectory; cannot drift
+  shard: none                # frozen ~4.3 GiB replica; sharding it buys little here
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
+
+model:
+  embed_dim: 1024
+  patch_size: 16
+  # Same file as teacher.checkpoint: student and teacher start identical, so the
+  # anchor terms start near zero and the fitted Sim(3) is a small correction.
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
+  gradient_checkpointing: true
+  enable_3dgs: true
+  # SH degree 3 at 512px fits because the context set is 16 views; degree 4
+  # needs view-chunked rendering (see the sibling repo's measurements).
+  gs_sh_degree: 3
+  # Only gs_dpt_head + gs_decoder train; geometry comes from the pretrained
+  # VGGT, so the Sim(3) stays stationary and the gate stays open.
+  freeze_backbone: true
+
+data:
+  train:
+    _target_: vggt_omega.datasets.dataloaders.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 2
+    max_img_per_gpu: 24
+    shuffle: false
+    pin_memory: true
+    common_config:
+      # 512 = the checkpoint's native training resolution, on top of the
+      # quarter-resolution COLMAP images (sequence_kwargs.scale_factor: 4).
+      # Long side resized to 512 -> frames land at ~448x512.
+      img_size: 512
+      patch_size: 16
+      samples_per_epoch: 10000
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: false
+      track_num: 1024
+      training: true
+      inside_random: true
+      rescale: true
+      rescale_aug: false
+      landscape_check: false
+      debug: false
+      get_nearby: true
+      load_depth: false        # no GT depth in this dataset, and the loss never asks
+      img_nums: [24, 24]       # exactly 24 frames/sample -> the 16+8 split
+      max_img_per_gpu: 24
+      allow_duplicate_img: true
+      repeat_batch: false
+      augs:                    # geometry- and photometry-preserving: the photometric
+        cojitter: false        # loss compares renders against these very pixels
+        cojitter_ratio: 0.3
+        scales: null
+        aspects: [0.33, 1.0]
+        color_jitter: {brightness: 0.0, contrast: 0.0, saturation: 0.0, hue: 0.0, p: 0.0}
+        gray_scale: false
+        gau_blur: false
+    dataset:
+      _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+          sequence_cls:
+            _target_: hydra.utils.get_class
+            path: vggt_omega.datasets.sequences.mipnerf360.MipNerf360Sequence
+          split: train
+          data_root: /jfs/jing.feng/datasets/mipnerf360
+          sequences: ["garden"]
+          min_num_images: 24
+          sequence_kwargs:
+            sparse_dir: sparse/0
+            scale_factor: 4
