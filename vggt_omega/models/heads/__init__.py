@@ -6,6 +6,18 @@
 
 from .camera_head import CameraHead
 from .dense_head import DenseHead
+from .gaussian_head import Gaussians, GSDecoder, GSDecoderOutput, GSDPTHead
 from .text_alignment_head import TextAlignmentHead
 
-__all__ = ["CameraHead", "DenseHead", "TextAlignmentHead"]
+# The Fuse2D/Fuse3D fusion strategies GSDecoder plugs in live in
+# gaussian_splat.fuser.
+
+__all__ = [
+    "CameraHead",
+    "DenseHead",
+    "Gaussians",
+    "GSDecoder",
+    "GSDecoderOutput",
+    "GSDPTHead",
+    "TextAlignmentHead",
+]

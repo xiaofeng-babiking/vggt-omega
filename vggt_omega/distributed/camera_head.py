@@ -34,4 +34,4 @@ class ContextParallelCameraHead(CameraHead):
             cam_reg = distributed_block_forward(block, cam_reg, self.cp_group, self.strategy, rope=None)
         cam_reg = cam_reg.reshape(batch_size, num_frames, patch_token_start, -1)
         camera_tokens = self.trunk_norm(cam_reg[:, :, 0])
-        return _apply_camera_activation(self.camera_branch(camera_tokens))
+        return _apply_camera_activation(self.camera_branch(camera_tokens), self.fov_activation)

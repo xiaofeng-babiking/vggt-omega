@@ -21,15 +21,24 @@ class ContextParallelVGGTOmega(VGGTOmega):
         enable_camera: bool = True,
         enable_depth: bool = True,
         enable_alignment: bool = False,
+        fov_activation: str = "softplus",
     ) -> None:
-        super().__init__(patch_size, embed_dim, enable_camera, enable_depth, enable_alignment)
+        super().__init__(
+            patch_size, embed_dim, enable_camera, enable_depth, enable_alignment,
+            fov_activation=fov_activation,
+        )
 
         self.aggregator = ContextParallelAggregator(patch_size=patch_size, embed_dim=embed_dim)
         self.aggregator.cp_group = cp_group
         self.aggregator.strategy = strategy
 
         if self.camera_head is not None:
-            self.camera_head = ContextParallelCameraHead(dim_in=2 * embed_dim)
+            # Carry the activation over from the head super().__init__ just built,
+            # or a configured fov_activation would silently revert to the default
+            # under context parallelism while the non-CP path honoured it.
+            self.camera_head = ContextParallelCameraHead(
+                dim_in=2 * embed_dim, fov_activation=self.camera_head.fov_activation
+            )
             self.camera_head.cp_group = cp_group
             self.camera_head.strategy = strategy
         # text_alignment_head, if enabled, also mixes across frames; out of scope
