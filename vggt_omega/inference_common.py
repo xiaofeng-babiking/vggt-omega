@@ -63,51 +63,13 @@ def effective_long_side(native_long: int, image_scale: float) -> int:
     return max(16, int(round(native_long * image_scale / 16)) * 16)
 
 
-def unproject_depth_map_to_point_map(
-    depth_map: np.ndarray, extrinsic: np.ndarray, intrinsic: np.ndarray
-) -> np.ndarray:
-    """Unproject per-frame depth into a common world frame -> (S, H, W, 3).
-
-    `extrinsic` is world-to-camera (OpenCV) [R|t], so world = R^T @ (cam - t).
-    """
-    depth = depth_map[..., 0]
-    num, height, width = depth.shape
-
-    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
-    x = np.broadcast_to(x[None], (num, height, width))
-    y = np.broadcast_to(y[None], (num, height, width))
-
-    fx = intrinsic[:, 0, 0][:, None, None]
-    fy = intrinsic[:, 1, 1][:, None, None]
-    cx = intrinsic[:, 0, 2][:, None, None]
-    cy = intrinsic[:, 1, 2][:, None, None]
-
-    camera_points = np.stack(
-        [(x - cx) / fx * depth, (y - cy) / fy * depth, depth], axis=-1
-    )
-    rotation = extrinsic[:, :3, :3]
-    translation = extrinsic[:, :3, 3]
-    return np.einsum(
-        "sij,shwj->shwi",
-        np.transpose(rotation, (0, 2, 1)),
-        camera_points - translation[:, None, None, :],
-    )
-
-
-def world_to_camera_to_camera_to_world(w2c: np.ndarray) -> np.ndarray:
-    """Invert world-to-camera ``(S, 3, 4)`` -> camera-to-world ``(S, 4, 4)``.
-
-    The translation column of the result is the camera centre in world coords --
-    the trajectory positions :class:`CameraPoseMetric` consumes.
-    """
-    rotation = w2c[:, :3, :3]
-    translation = w2c[:, :3, 3]
-    rot_c2w = np.transpose(rotation, (0, 2, 1))
-    trans_c2w = -np.einsum("sij,sj->si", rot_c2w, translation)
-    c2w = np.tile(np.eye(4), (w2c.shape[0], 1, 1))
-    c2w[:, :3, :3] = rot_c2w
-    c2w[:, :3, 3] = trans_c2w
-    return c2w
+# Canonical implementations moved to vggt_omega.utils.geometry (the COLMAP
+# dataset path and the self-supervised trainer need them without dragging in
+# this module's gflags/cv2 surface); re-exported here for existing callers.
+from vggt_omega.utils.geometry import (  # noqa: E402,F401
+    unproject_depth_map_to_point_map,
+    world_to_camera_to_camera_to_world,
+)
 
 
 def save_uint16_image(array: np.ndarray, scale: float, path: str) -> None:
