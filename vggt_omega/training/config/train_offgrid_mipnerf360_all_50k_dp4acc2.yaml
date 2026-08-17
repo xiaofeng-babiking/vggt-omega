@@ -1,0 +1,234 @@
+# 4-GPU variant of train_offgrid_mipnerf360_all_50k.yaml -- SAME recipe, half
+# the ranks: dp=4 with accumulate_steps=2 keeps the effective batch at 8, 512px
+# and sh3 unchanged, at ~2x the wall clock. Exists because GPUs 4-7 of this
+# host were occupied by other users' jobs (32-37 GB resident) at launch time,
+# leaving less than the recipe's measured 53.5 GB/rank peak; ranks 0-3 fit.
+#
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 train.py \
+#       --config vggt_omega/training/config/train_offgrid_mipnerf360_all_50k_dp4acc2.yaml \
+#       --out_root /jfs/jing.feng/outputs/vggt-omega --run_name mip360_all_50k
+#
+# global_step counts OPTIMIZER steps (the LR schedule is defined over them), so
+# max_steps 50000 means 100k forwards here.
+#
+# Off-the-grid 16+8 distillation across ALL NINE mip-NeRF-360 scenes.
+# 50000 steps, frozen backbone, pure FSDP2 dp=8 -- all eight GPUs, one node.
+#
+#   torchrun --standalone --nproc_per_node=8 train.py \
+#       --config vggt_omega/training/config/train_offgrid_mipnerf360_all_50k.yaml \
+#       --out_root outputs --run_name mip360_all_50k
+#
+# Ported from the sibling MUSA repo's train_offgrid_mipnerf360_all_50k.yaml,
+# whose garden-only ancestor finished at held-out target PSNR 19.41 dB / SSIM
+# 0.392 with gate_rate 1.0. Smoke-test the plumbing first with
+# train_offgrid_mip360_fsdp8_smoke.yaml.
+#
+# Each rank draws its own random 24-frame window from one scene and splits it
+# into 16 context + 8 target views. Three forwards per step, all on the same
+# frames:
+#
+#   teacher(16 context)  frozen, no-grad -> the camera + depth the student is
+#                        regressed onto. Same view set as the student, so the two
+#                        are in the same gauge and comparable without alignment.
+#   teacher(24 all)      frozen, no-grad -> the trajectory. A better-informed
+#                        reconstruction and therefore a DIFFERENT gauge, so it is
+#                        Sim(3)-aligned onto the student over the 16-view overlap
+#                        before its 8 target poses are used.
+#   student(16 context)  grad, decode_gaussians -> one fused 3DGS scene.
+#
+# The 16 context views are rendered at the student's own cameras and the 8
+# target views at the aligned teacher poses, both against the real frames. No GT
+# poses, depth or points are used anywhere.
+#
+# WHY THE FROZEN BACKBONE MATTERS. Gaussian centres are unprojected from the
+# student's predicted depth and pose. With the backbone trainable the geometry
+# drifts out of the teacher's gauge -- on garden that took sim3_residual from
+# 0.004 to 0.78 and closed the refuse gate completely by step 800, leaving a
+# context-only run wearing an off-the-grid config. Frozen, each scene's geometry
+# comes from the pretrained VGGT and the gaussian head learns appearance only.
+# Across nine scenes that is the honest feed-forward setting: the head cannot
+# memorise one scene, it has to learn something that transfers.
+#
+# A NaN forensic worth keeping from the sibling repo: a device that silently
+# returns NaN (rather than erroring) from FULL model forwards while raw matmul
+# and conv/attention stay clean is a hardware fault, not a model bug -- if
+# non-finite steps ever cluster on ONE rank, probe the device before debugging
+# the model. The guard in _finish_micro_step turns such steps into "the whole
+# group skips" rather than a crash.
+
+run:
+  output_dir: outputs/offgrid_mipnerf360_all_50k   # train.py overrides with --out_root/--run_name
+  max_steps: 50000
+  log_interval: 50           # 50, not 10: 50k steps at 10 is 5000 log lines
+  img_log_interval: 0        # offgrid has no GT panel to log
+  val_interval: 0            # no GT poses used -- evaluation is out of process
+                             # over the ckpt_interval checkpoints
+  ckpt_interval: 2000        # 25 eval points over 50k steps; each checkpoint is
+                             # ~5 GB the pair, so a tighter cadence costs storage
+                             # for no extra signal
+  keep_last: 25
+  seed: 42
+
+optim:
+  # dp=8, no frame sharding: eight independent samples per step. This fits ONLY
+  # because model.freeze_backbone is on -- the sibling repo measured the frozen
+  # recipe at 52.8 GB/rank mean / 55.6 peak on 80 GB parts; with a trainable
+  # backbone dp=8 OOM'd inside gaussian_head.scratch_forward and needed
+  # training-side context parallelism, which this repo deliberately does not
+  # carry (see docs spec 2026-08-13).
+  #
+  # Memory swings step to step because the dynamic batcher draws a random
+  # aspect ratio (augs.aspects below). A single step's peak is NOT the run's
+  # peak; judge headroom from the worst window, not the first reading.
+  parallel: fsdp
+  accumulate_steps: 2        # dp=4 x acc=2 = effective batch 8 (see header)
+  lr: 1.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  fused: false               # parity with the sibling repo's runs
+  grad_compression: none     # DDP-only knob; inert under FSDP
+
+fsdp:
+  reshard_after_forward: true
+  param_dtype: "none"        # heads force fp32 LayerNorm internally; casting params crashes the forward
+  reduce_dtype: bfloat16     # bf16 gradient reduction (MixedPrecisionPolicy)
+  hybrid_shard: false        # single node -> full shard over every rank
+  shard_size: null
+  cpu_offload: false
+
+selfsup:
+  enabled: true
+  mode: offgrid
+  n_target: 8                # 8 held-out target views; context M = S - 8 = 16
+  # Weights per the sibling repo's final recipe. l2 at 0.3: MSE is the blur term
+  # structurally (minimised by the conditional mean) but keeps a from-scratch
+  # head anchored early. ssim at 0.3 for structural pressure. LPIPS OFF: it was
+  # the sharpness lever (garden 0.63 -> 0.26 on a completed 5000-step run) but
+  # NaN'd on 43% of steps by step 4000 of a 50k run -- from a finite, clamped,
+  # in-range render, onset sharply after warmup -- and one nan term discards the
+  # whole step across every rank. Turn it back on only with the nan understood,
+  # or with the term neutralised individually rather than killing the step.
+  # Zero weight also means the vgg trunk never builds (~9 GB/rank returned).
+  weights: {l1: 0.8, l2: 0.3, ssim: 0.3, lpips: 0.0}
+  lpips_net: vgg             # the better LOSS trunk (smoother gradients); alex is
+                             # the trunk papers REPORT. Inert at weight 0.0.
+  lpips_chunk_size: 2        # NOT optional with vgg if lpips is ever enabled:
+                             # unchunked vgg measured 14.5 GiB for the term alone
+                             # at 16 views 448x512 with backward; chunk=2 is 9.2.
+  target_weight: 1.0         # held-out views vs the self-render they sit alongside
+  # render_depth 0.1 anchors the RENDERED depth (post fusion/opacity/alpha
+  # compositing) to the teacher, not just the dense head's raw prediction -- the
+  # two disagree when the depth map is right but the splats are too transparent
+  # or were fused away, and only this term notices. Alpha-masked, so uncovered
+  # pixels are not trained toward "the teacher's depth in empty space".
+  # camera/depth are inert tripwires under freeze_backbone (frozen vs frozen
+  # compares equal): anything other than ~0 means the freeze is broken.
+  distill: {camera: 1.0, depth: 1.0, render_depth: 0.1}
+  conf_weighted_depth: true  # follow the teacher where the teacher is confident
+  rasterize_mode: classic    # matches the AnySplat weights the gaussian head starts from
+  ssim_backend: auto         # fused kernel if installed, torch reference otherwise
+  # Refuse gate: when the Sim(3) fitted over the context overlap does not
+  # explain it, the 8 target renders are the right scene from the wrong place
+  # and their photometric loss is noise. Those views are dropped for that
+  # sample; the step keeps its context supervision. Thresholds sit ~3x above
+  # the measured healthy operating range (residual <= 0.048) and well under a
+  # real bad fit (0.257). Watch train/gate_rate: sitting at 0 means a
+  # context-only run wearing an off-the-grid config.
+  gate:
+    max_scale_log: 0.25      # |log s| -- allows a 1.28x scale change
+    max_rotation_deg: 15.0   # both trajectories are anchored to view 0
+    max_residual: 0.15       # RMS fit error as a fraction of trajectory radius
+
+teacher:
+  mode: frozen               # supplies both the anchor and the trajectory; cannot drift
+  shard: none                # frozen ~4.3 GiB replica; affordable at the frozen
+                             # recipe's per-rank footprint
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
+
+model:
+  embed_dim: 1024
+  patch_size: 16
+  # Same file as teacher.checkpoint: student and teacher start identical, so the
+  # anchor terms start near zero and the fitted Sim(3) is a small correction
+  # rather than an arbitrary rigid motion.
+  checkpoint: ${oc.env:VGGT_OMEGA_CHECKPOINT,/jfs/jing.feng/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt}
+  gradient_checkpointing: true
+  enable_3dgs: true
+  # Gaussians are PER-PIXEL, so SH colour is V x N x K x 3 floats with
+  # K = (deg+1)^2 -- the single tensor that sets the memory ceiling, scaling
+  # with view count, pixels and SH order at once. Degree 3 at 512px is reachable
+  # because the context set is 16 views; degree 4 needs view-chunked rendering
+  # under torch.utils.checkpoint at ~2x render compute. SH order buys
+  # VIEW-DEPENDENT colour (specular, sheen); spatial sharpness comes from
+  # gaussian count and size, not SH.
+  gs_sh_degree: 3
+  # FROZEN BACKBONE: only gs_dpt_head + gs_decoder train (the only modules the
+  # released checkpoint does not carry). Everything else keeps its pretrained
+  # weights with requires_grad=False. See the header for why this is what keeps
+  # the refuse gate open across a 50k-step run.
+  freeze_backbone: true
+
+data:
+  train:
+    _target_: vggt_omega.datasets.dataloaders.dynamic_dataloader.DynamicTorchDataset
+    # Per-rank workers; 8 ranks multiply whatever is written here. Steps are
+    # seconds of GPU work against one scene's JPEGs, so a small pool prefetches
+    # far ahead.
+    num_workers: 2
+    max_img_per_gpu: 24
+    shuffle: false
+    pin_memory: true
+    common_config:
+      # 512 = the checkpoint's native training resolution, on top of the
+      # quarter-resolution COLMAP images (sequence_kwargs.scale_factor: 4). The
+      # long side is resized to 512, so frames land at ~448x512.
+      img_size: 512
+      patch_size: 16
+      samples_per_epoch: 10000
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: false
+      track_num: 1024
+      training: true
+      inside_random: true
+      rescale: true
+      rescale_aug: false
+      landscape_check: false
+      debug: false
+      get_nearby: true
+      load_depth: false        # no GT depth in this dataset, and the loss never asks
+      img_nums: [24, 24]       # exactly 24 frames/sample -> the 16+8 split
+      max_img_per_gpu: 24
+      allow_duplicate_img: true
+      repeat_batch: false
+      augs:                    # geometry- and photometry-preserving: the photometric
+        cojitter: false        # loss compares renders against these very pixels
+        cojitter_ratio: 0.3
+        scales: null
+        aspects: [0.33, 1.0]
+        color_jitter: {brightness: 0.0, contrast: 0.0, saturation: 0.0, hue: 0.0, p: 0.0}
+        gray_scale: false
+        gau_blur: false
+    dataset:
+      _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+          sequence_cls:
+            _target_: hydra.utils.get_class
+            path: vggt_omega.datasets.sequences.mipnerf360.MipNerf360Sequence
+          split: train
+          data_root: /jfs/jing.feng/datasets/mipnerf360
+          # ALL NINE mip-NeRF-360 scenes, listed rather than left null: passing
+          # null makes discover() glob every sub-directory of data_root, which
+          # would silently absorb anything dropped in there later. Image counts
+          # at scale_factor 4:
+          #   bicycle 194  bonsai 292  counter 240  flowers 173  garden 185
+          #   kitchen 279  room 311  stump 125  treehill 141   = 1740 frames
+          sequences: ["bicycle", "bonsai", "counter", "flowers", "garden",
+                      "kitchen", "room", "stump", "treehill"]
+          min_num_images: 24   # every scene clears this; stump is smallest at 125
+          sequence_kwargs:
+            sparse_dir: sparse/0
+            scale_factor: 4
