@@ -1,15 +1,13 @@
-# 4-GPU variant of train_offgrid_mipnerf360_all_50k.yaml -- SAME recipe, half
-# the ranks: dp=4 with accumulate_steps=2 keeps the effective batch at 8, 512px
-# and sh3 unchanged, at ~2x the wall clock. Exists because GPUs 4-7 of this
-# host were occupied by other users' jobs (32-37 GB resident) at launch time,
-# leaving less than the recipe's measured 53.5 GB/rank peak; ranks 0-3 fit.
+# 4-GPU variant of train_offgrid_mipnerf360_all_50k.yaml: pure dp=4, no
+# accumulation -- effective batch 4 (the 8-GPU recipe's is 8; that halving is
+# the one deviation, chosen deliberately for wall-clock). 512px and sh3
+# unchanged. Exists because GPUs 4-7 of this host were occupied by other
+# users' jobs (32-37 GB resident) at launch time, leaving less than the
+# recipe's measured 53.5 GB/rank peak; ranks 0-3 fit.
 #
 #   CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 train.py \
-#       --config vggt_omega/training/config/train_offgrid_mipnerf360_all_50k_dp4acc2.yaml \
-#       --out_root /jfs/jing.feng/outputs/vggt-omega --run_name mip360_all_50k
-#
-# global_step counts OPTIMIZER steps (the LR schedule is defined over them), so
-# max_steps 50000 means 100k forwards here.
+#       --config vggt_omega/training/config/train_offgrid_mipnerf360_all_50k_dp4.yaml \
+#       --out_root /jfs/jing.feng/outputs/vggt-omega --run_name mip360_all_50k_dp4
 #
 # Off-the-grid 16+8 distillation across ALL NINE mip-NeRF-360 scenes.
 # 50000 steps, frozen backbone, pure FSDP2 dp=8 -- all eight GPUs, one node.
@@ -81,7 +79,7 @@ optim:
   # aspect ratio (augs.aspects below). A single step's peak is NOT the run's
   # peak; judge headroom from the worst window, not the first reading.
   parallel: fsdp
-  accumulate_steps: 2        # dp=4 x acc=2 = effective batch 8 (see header)
+  accumulate_steps: 1        # pure dp: effective batch 4 (see header)
   lr: 1.0e-4
   weight_decay: 0.05
   betas: [0.9, 0.95]
