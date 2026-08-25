@@ -1,0 +1,89 @@
+# Per-dataset configure for inference.py --enable_3dgs (mip-NeRF-360, 3DGS):
+# ONE random 24-frame CONSECUTIVE window per scene, all nine scenes.
+#
+# Sibling of mipnerf360_gs.yaml, which scores 16 views scattered over the
+# every-8th "test split" pool. This file instead draws the shape of a TRAINING
+# sample -- a contiguous span of the capture, the way train_offgrid_*.yaml's
+# sampler sees a scene -- so the self-render score reads against the training
+# loss curve rather than against a convention split the head never trained on.
+#
+#   * frame_stride 1, frame_sampling window, num_frames 24: 24 consecutive
+#     frames from a random start, seeded per scene NAME (inference.seed +
+#     crc32(name)) so a rerun scores the same span and a reordered scene list
+#     does not move it.
+#   * long_side 512: the checkpoint's trained resolution, stated absolutely
+#     because images_4 is a different width per scene (garden 1297, bicycle
+#     1237) and image_scale 0.4 would land off-distribution on most of them.
+#   * every scene clears min_num_images 24; stump is the smallest at 125.
+#
+# Honest scope: the off-the-grid runs draw random windows over EVERY frame, so
+# no frame here is unseen, and the 3DGS metrics are a SELF-RENDER of the views
+# fed in. See inference.py's docstring.
+#
+#   python inference.py --configure vggt_omega/datasets/configures/mipnerf360_gs_window.yaml \
+#       --checkpoint <run>/model_step050000.pt --enable_3dgs --gs_sh_degree 3 \
+#       --output_root <run>/eval_step050000_window24
+
+# --- ComposedDataset: the training loader, instantiated for eval -------------
+dataset:
+  _target_: vggt_omega.datasets.dataloaders.composed_dataset.ComposedDataset
+  dataset_configs:
+    - _target_: vggt_omega.datasets.dataloaders.sequence_dataset.SequenceDataset
+      sequence_cls:
+        _target_: hydra.utils.get_class
+        path: vggt_omega.datasets.sequences.mipnerf360.MipNerf360Sequence
+      split: train
+      # Machine-specific path -- override for your environment.
+      data_root: /jfs/jing.feng/datasets/mipnerf360
+      # All nine scenes, listed rather than globbed so the run is reproducible.
+      sequences: ["bicycle", "bonsai", "counter", "flowers", "garden",
+                  "kitchen", "room", "stump", "treehill"]
+      min_num_images: 24
+      sequence_kwargs:
+        sparse_dir: sparse/0
+        # images_4 (quarter resolution); intrinsics auto-rescale to it.
+        scale_factor: 4
+
+# --- common_config: shared tensorization, with deterministic-eval overrides --
+common_config:
+  img_size: 512
+  patch_size: 16
+  fix_img_num: -1
+  fix_aspect_ratio: 1.0
+  load_track: false         # COLMAP: no 2D tracks
+  track_num: 1024
+  training: false           # eval: no scale/colour augmentation
+  inside_random: false      # eval: honor explicit seq_index / ids
+  rescale: true
+  rescale_aug: false        # eval: deterministic resize
+  landscape_check: false
+  debug: false
+  get_nearby: false         # eval: use our ordered ids verbatim
+  load_depth: false         # mip-NeRF-360 ships no depth (photogrammetry, no sensor)
+  img_nums: [2, 24]
+  max_img_per_gpu: 48
+  allow_duplicate_img: false
+  repeat_batch: false
+  augs:
+    cojitter: false
+    cojitter_ratio: 0.3
+    scales: null            # eval: no scale augmentation
+    aspects: [0.33, 1.0]
+    color_jitter: {brightness: 0.0, contrast: 0.0, saturation: 0.0, hue: 0.0, p: 0.0}
+    gray_scale: false
+    gau_blur: false
+
+# --- inference: dataset sampling / resolution knobs --------------------------
+inference:
+  # Views per sequence: one training-shaped window.
+  num_frames: 24
+  # ABSOLUTE target long side, snapped to /16 -- the model's trained resolution.
+  long_side: 512
+  # Fallback only; long_side above wins.
+  image_scale: 0.4
+  # Candidate pool = every frame, so the window is truly consecutive.
+  frame_stride: 1
+  # "window": num_frames consecutive pool entries from a seeded random start.
+  frame_sampling: window
+  # Seeds the start draw (combined with the scene name).
+  seed: 0

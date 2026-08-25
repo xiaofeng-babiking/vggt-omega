@@ -320,7 +320,8 @@ class ComposedDataset(Dataset, ABC):
         stride 8 is mip-NeRF-360's convention test split, the frames its published
         numbers are computed over. ``frame_sampling`` then takes ``num_frames``
         from that pool: ``linspace`` evenly spaced (the default, and the historical
-        behaviour) or ``random``, a draw seeded by ``inference.seed``.
+        behaviour), ``random``, a draw seeded by ``inference.seed``, or ``window``,
+        ``num_frames`` CONSECUTIVE pool entries from a seeded random start.
         ``num_frames_override`` replaces ``inference.num_frames`` when not None.
 
         Lives here rather than in an entrypoint because more than one process has
@@ -351,8 +352,24 @@ class ComposedDataset(Dataset, ABC):
             generator = torch.Generator().manual_seed(seed)
             picked = torch.randperm(len(pool), generator=generator)[:num_frames].tolist()
             return np.sort(pool[picked])
+        if sampling == "window":
+            import zlib
+
+            # A contiguous span of the sequence -- the shape of a TRAINING draw,
+            # where "random" scatters the views over the whole scene. Seeded per
+            # scene NAME rather than index so the span survives a reordered
+            # configure, through the same seeded-Generator discipline as "random"
+            # so every rank derives the identical start.
+            seed = int(OmegaConf.select(inference_cfg, "seed", default=0))
+            name = self.sequence_name(seq_index)
+            generator = torch.Generator().manual_seed(
+                (seed + zlib.crc32(name.encode("utf-8"))) % (2**31 - 1)
+            )
+            start = int(torch.randint(0, len(pool) - num_frames + 1, (1,), generator=generator))
+            return pool[start : start + num_frames]
         raise ValueError(
-            f"inference.frame_sampling must be 'linspace' or 'random', got {sampling!r}"
+            "inference.frame_sampling must be 'linspace', 'random' or 'window', "
+            f"got {sampling!r}"
         )
 
     def get_sample(self, seq_index, ids, aspect_ratio=1.0, num_workers=None):

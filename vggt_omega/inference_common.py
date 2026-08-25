@@ -56,6 +56,58 @@ gflags.DEFINE_integer(
     "Thread workers for parallel frame loading in get_sample: -1 = auto "
     "(min(32, cores) / local ranks), 0 or 1 = serial.",
 )
+gflags.DEFINE_string(
+    "sequences",
+    None,
+    "Comma-separated scene names or globs that REPLACE every dataset_config's "
+    "`sequences` in the configure (e.g. --sequences bicycle,garden). Unset = the "
+    "configure's own list.",
+)
+
+# --- 3D gaussian splatting (ported from the sibling MUSA repo's inference.py) --
+gflags.DEFINE_boolean(
+    "enable_3dgs",
+    False,
+    "Build the gaussian head, decode a 3DGS scene from the predicted depth + cameras, "
+    "rasterize the input views back out of it and score that self-render "
+    "(PSNR/SSIM/LPIPS). Dumps gaussians.ply (INRIA/SuperSplat layout), "
+    "render_compare/ (per-view ground truth | rendered | error sheet) and "
+    "metrics/gaussians.json. REQUIRES a checkpoint trained with a gaussian head; "
+    "--gs_sh_degree must match the one it was trained at.",
+)
+gflags.DEFINE_integer(
+    "gs_sh_degree",
+    4,
+    "Spherical-harmonic degree of the gaussian head. MUST match the training config's "
+    "model.gs_sh_degree or the checkpoint will not load (the head's channel count is "
+    "(deg+1)^2 * 3).",
+)
+gflags.DEFINE_string(
+    "gs_rasterize_mode",
+    "classic",
+    "gsplat rasterization mode for the self-render: 'classic' or 'antialiased'. Must "
+    "match the mode the weights were trained with (selfsup.rasterize_mode).",
+)
+gflags.DEFINE_integer(
+    "gs_render_chunk",
+    0,
+    "[--enable_3dgs] Views rasterized per gsplat call. 0 = auto, sized so the "
+    "spherical-harmonic expansion (views x gaussians x coeffs x 3 floats) stays "
+    "under a fixed byte budget. Output is bit-identical to a single call.",
+)
+gflags.DEFINE_boolean(
+    "gs_dump_ply",
+    True,
+    "[--enable_3dgs] Write the fused scene to gaussians.ply. Off (--nogs_dump_ply) "
+    "when only the scores are wanted: a 3.5M-splat sh3 scene is ~860 MB and took "
+    "~9 min to write on a busy disk, several times the render + scoring itself.",
+)
+gflags.DEFINE_string(
+    "gs_lpips_net",
+    "vgg",
+    "LPIPS trunk for the self-render score: 'vgg' (the loss trunk this repo trains "
+    "against) or 'alex' (the trunk papers report).",
+)
 
 
 def effective_long_side(native_long: int, image_scale: float) -> int:
@@ -130,23 +182,91 @@ def build_dataset(cfg) -> ComposedDataset:
     ``common_config`` verbatim, with the eval overrides (training off, ordered
     ids, deterministic resize, no augmentation) already baked into the YAML and
     instantiated exactly as training does -- so inference cannot silently drift.
-    The target long side is the data's NATIVE long side x ``inference.image_scale``,
-    read from the dataset itself rather than hardcoded.
+    The target long side comes from :func:`resolve_long_side`: an absolute
+    ``inference.long_side`` when the configure states one, else the data's
+    NATIVE long side x ``inference.image_scale`` -- read from the dataset itself
+    rather than hardcoded.
     """
+    apply_sequence_override(cfg)
     dataset = instantiate(cfg.dataset, common_config=cfg.common_config, _recursive_=False)
     native_h, native_w = dataset.native_image_size()
-    dataset.set_img_size(
-        effective_long_side(max(native_h, native_w), cfg.inference.image_scale)
-    )
+    dataset.set_img_size(resolve_long_side(cfg, max(native_h, native_w)))
     return dataset
 
 
-def resolve_frame_ids(dataset: ComposedDataset, seq_index: int, num_frames: int) -> np.ndarray:
-    """Ordered frame ids for one sequence: all frames (``num_frames<=0``) or evenly spaced."""
-    num_available = dataset.sequence_num_frames(seq_index)
-    if num_frames <= 0 or num_frames >= num_available:
-        return np.arange(num_available)  # ALL frames, ordered
-    return np.linspace(0, num_available - 1, num_frames).round().astype(int)
+def apply_sequence_override(cfg) -> None:
+    """Rewrite every ``dataset_config``'s ``sequences`` from ``--sequences``.
+
+    Mutates ``cfg`` in place before instantiation, because the scene list is
+    consumed by ``SequenceDataset.__init__`` and cannot be changed afterwards.
+    A no-op when the flag is unset. Raises if the configure declares no
+    ``sequences`` anywhere, rather than silently running the configure's own
+    scenes under a flag the caller believed had taken effect.
+    """
+    if FLAGS.sequences is None:
+        return
+    names = [s.strip() for s in FLAGS.sequences.split(",") if s.strip()]
+    if not names:
+        raise SystemExit("--sequences was empty; pass names or globs, e.g. --sequences bicycle")
+    applied = 0
+    for entry in OmegaConf.select(cfg, "dataset.dataset_configs", default=[]) or []:
+        if "sequences" in entry:
+            entry.sequences = names
+            applied += 1
+    if not applied:
+        raise SystemExit(
+            f"--sequences {FLAGS.sequences!r} was given but {FLAGS.configure} declares no "
+            "dataset_configs[*].sequences to override."
+        )
+    logger.info(f"--sequences override: {names} (applied to {applied} dataset_config(s))")
+
+
+def resolve_long_side(cfg, native_long: int) -> int:
+    """Target long side: ``inference.long_side`` if stated, else ``image_scale``.
+
+    ``image_scale`` is RELATIVE to whatever the image directory happens to be,
+    which is the wrong knob once a model has a trained resolution: mip-NeRF-360's
+    images_4 is 1297 px wide for garden but 1237 for bicycle, so the 0.4 that
+    lands exactly on 512 for garden gives 496 for bicycle -- silently off
+    distribution, and not comparable BETWEEN scenes. ``inference.long_side``
+    states the target directly and holds across scenes.
+    """
+    long_side = OmegaConf.select(cfg, "inference.long_side", default=None)
+    if long_side:
+        return max(16, int(round(int(long_side) / 16)) * 16)
+    return effective_long_side(native_long, cfg.inference.image_scale)
+
+
+def resolve_frame_ids(dataset: ComposedDataset, seq_index: int, inference_cfg) -> np.ndarray:
+    """Ordered frame ids for one sequence, per the configure's ``inference`` block.
+
+    Delegates to :meth:`ComposedDataset.resolve_frame_ids` -- ``num_frames``
+    (<=0 = all), ``frame_stride``, ``frame_sampling`` (linspace / random /
+    window) and ``seed`` -- so the single-GPU and distributed entrypoints
+    cannot drift apart on which frames they score.
+    """
+    return dataset.resolve_frame_ids(seq_index, inference_cfg)
+
+
+def resolve_checkpoint(checkpoint: str) -> str:
+    """Accept a trainer sidecar in place of the weights file.
+
+    ``trainer_step*.pt`` carries optimizer + scheduler + RNG state and no weights
+    at all, so loading it as a state_dict fails with an opaque key error. The
+    trainer writes the pair together and ``Trainer.resume`` recovers the weights
+    by exactly this substitution.
+    """
+    directory, name = os.path.split(checkpoint)
+    if not name.startswith("trainer_step"):
+        return checkpoint
+    weights = os.path.join(directory, name.replace("trainer_step", "model_step", 1))
+    if not os.path.exists(weights):
+        raise SystemExit(
+            f"{checkpoint} is the trainer sidecar (optimizer + scheduler + RNG state, "
+            f"no model weights); the weights belong in {weights}, which is missing."
+        )
+    logger.info(f"{name} is the trainer sidecar; loading weights from {os.path.basename(weights)}")
+    return weights
 
 
 def load_sample(dataset: ComposedDataset, seq_index: int, frame_ids) -> dict:

@@ -11,7 +11,18 @@ output/fusion knobs stay as command-line flags. Per sequence we:
   1. predict **camera poses** and **monocular depth** (+ a fused point cloud);
   2. dump them (depth/conf PNGs, ``cameras.json``, ``pointcloud.ply``);
   3. evaluate against the TUM ground truth -- camera pose (ATE / RPE) and mono
-     depth (Abs Rel / delta).
+     depth (Abs Rel / delta);
+  4. with ``--enable_3dgs``, also decode the **3D gaussian** scene, rasterize the
+     input views back out of it, score that render (PSNR / SSIM / LPIPS) and dump
+     the fused ``gaussians.ply`` plus a per-view ground-truth | rendered | error
+     sheet (ported from the sibling MUSA repo).
+
+The 3DGS stage needs a checkpoint whose gaussian head was trained (``enable_3dgs:
+true`` in its training config) and ``--gs_sh_degree`` equal to the degree it was
+trained at. Note what its metrics are and are not: the views rendered are the same
+views fed in, so a **self-render** score can be met by geometry that is wrong
+everywhere the model was not looked at. Read it as reconstruction quality of the
+given views, not as novel-view synthesis.
 
 TUM has no independent point-cloud ground truth: its "world points" are only the
 GT depth re-projected through the GT poses, so the fused cloud is exported for
@@ -54,6 +65,7 @@ from vggt_omega.inference_common import (
     load_config,
     build_dataset,
     resolve_frame_ids,
+    resolve_checkpoint,
     load_sample,
     gt_from_sample,
 )
@@ -118,9 +130,16 @@ def _log_mfu(model, images: torch.Tensor, infer_secs: float) -> None:
 
 # --- 2. Model + inference ----------------------------------------------------
 def build_model() -> VGGTOmega:
-    """Build VGGT-Omega once and load the checkpoint."""
-    model = VGGTOmega().to(device).eval()
-    model.load_state_dict(torch.load(FLAGS.checkpoint, map_location="cpu"))
+    """Build VGGT-Omega once and load the checkpoint.
+
+    The gaussian head is built only under ``--enable_3dgs``; a checkpoint that
+    carries one then loads strictly, and one that does not fails on its missing
+    ``gs_dpt_head.*`` keys -- the right outcome, since there is nothing to render.
+    """
+    model = VGGTOmega(
+        enable_3dgs=FLAGS.enable_3dgs, gs_sh_degree=FLAGS.gs_sh_degree
+    ).to(device).eval()
+    model.load_state_dict(torch.load(resolve_checkpoint(FLAGS.checkpoint), map_location="cpu"))
     gpu_status("model loaded")
     return model
 
@@ -139,8 +158,14 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
         torch.cuda.reset_peak_memory_stats()
     t_infer = time.time()
     try:
-        with torch.inference_mode():
-            predictions = model(images)
+        # inference_mode is the faster context, but its tensors are barred from
+        # autograd bookkeeping FOREVER -- and gsplat's rasterizer is an
+        # autograd.Function that calls save_for_backward unconditionally, so
+        # rendering the decoded gaussians later would die on "Inference tensors
+        # cannot be saved for backward". no_grad gives the same gradient-free
+        # forward without poisoning the outputs.
+        with torch.no_grad() if FLAGS.enable_3dgs else torch.inference_mode():
+            predictions = model(images, decode_gaussians=FLAGS.enable_3dgs)
         if device == "cuda":
             torch.cuda.synchronize()
     except torch.cuda.OutOfMemoryError:
@@ -164,7 +189,7 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
     )
 
     # Pull to CPU/numpy (float() guards against bf16, which numpy can't hold).
-    return {
+    extracted = {
         "pred_depth": predictions["depth"].float().cpu().numpy()[0],  # (S, H, W, 1)
         "pred_conf": predictions["depth_conf"].float().cpu().numpy()[0],  # (S, H, W)
         "images_pred": predictions["images"]
@@ -174,6 +199,154 @@ def run_inference(model: VGGTOmega, images: torch.Tensor) -> dict:
         "pred_extrinsics": extrinsics.float().cpu().numpy()[0],  # (S, 3, 4) world->cam
         "pred_intrinsics": intrinsics.float().cpu().numpy()[0],  # (S, 3, 3) pixels
     }
+    if "gaussians" in predictions:
+        # The 3DGS stage rasterizes these, so they stay TENSORS on the device --
+        # round-tripping millions of splats through numpy would cost more than
+        # the render itself. The camera tensors ride along for the same reason.
+        extracted.update({
+            "gaussians": predictions["gaussians"],
+            "gaussians_valid": predictions["gaussians_valid"],
+            "gaussians_pixel_mask": predictions["gaussians_pixel_mask"],
+            "images_t": predictions["images"],
+            "extrinsics_t": extrinsics,
+            "intrinsics_t": intrinsics,
+        })
+    return extracted
+
+
+# --- 2b. 3D gaussian splatting: decode -> render -> score -> dump -------------
+#: Byte budget for gsplat's spherical-harmonic expansion when --gs_render_chunk
+#: is auto. Deliberately a constant rather than a fraction of free memory, so a
+#: run behaves the same on a busy GPU as on an idle one.
+_SH_BUDGET_BYTES = 8 << 30
+
+
+def render_views_chunked(gaussians, extrinsics, intrinsics, size_hw, rasterize_mode, chunk=0):
+    """Rasterize the views in groups, concatenating along the view axis.
+
+    gsplat expands spherical harmonics to (views, gaussians, coeffs, 3) in one
+    allocation, so peak memory is linear in the view count -- 16 views of a
+    quarter-resolution garden scene asks for 43 GiB and dies, while the same
+    scene renders comfortably a few views at a time. Each camera rasterizes the
+    same gaussian set independently, so the split changes nothing but the number
+    of kernel launches; the output is bit-identical to a single call.
+
+    ``chunk<=0`` sizes the group from ``_SH_BUDGET_BYTES``.
+    """
+    from gaussian_splat.render.render_by_gsplat import render_by_gsplat
+
+    num_views = extrinsics.shape[1]
+    if chunk <= 0:
+        # fp32 coefficients plus a same-sized scratch buffer for the evaluation.
+        per_view = gaussians.means.shape[1] * gaussians.harmonics.shape[-1] * 3 * 4 * 2
+        chunk = max(1, min(num_views, int(_SH_BUDGET_BYTES // max(per_view, 1))))
+    if chunk < num_views:
+        logger.info(f"[3dgs] rendering {num_views} views in chunks of {chunk} (SH memory)")
+
+    rendered = []
+    for start in range(0, num_views, chunk):
+        stop = min(start + chunk, num_views)
+        rendered.append(
+            render_by_gsplat(
+                gaussians, extrinsics[:, start:stop], intrinsics[:, start:stop],
+                size_hw, rasterize_mode=rasterize_mode,
+            ).color.clamp(0, 1)
+        )
+    return torch.cat(rendered, dim=1)
+
+
+def dump_gaussian_scene(output_dir: str, pred: dict, frame_ids) -> dict:
+    """Rasterize the decoded gaussian scene back into the input views and dump it.
+
+    Products, all under ``output_dir``:
+
+      ``gaussians.ply``          the fused scene, INRIA/SuperSplat layout
+      ``render_compare/``        one sheet per view -- ground truth | rendered |
+                                 absolute error -- titled with that view's PSNR,
+                                 SSIM and LPIPS
+      ``metrics/gaussians.json`` per-view and pooled scores
+
+    These are SELF-RENDER scores: the views rendered are the views fed in. A high
+    number here is consistent with geometry that is wrong everywhere the model was
+    not looked at, so read it as reconstruction quality, not novel-view synthesis.
+
+    Both a per-view mean PSNR and a pooled PSNR (from the total MSE) are reported.
+    They answer different questions -- the mean is what novel-view papers quote,
+    while the pooled figure is dominated by the worst view -- and a wide gap
+    between them means the views disagree badly.
+    """
+    from gaussian_splat.utils import dump_gaussians_ply
+    from vggt_omega.evaluates.photometric import dump_render_comparison, per_view_metrics
+
+    gaussians = pred["gaussians"]
+    images, extrinsics, intrinsics = pred["images_t"], pred["extrinsics_t"], pred["intrinsics_t"]
+    size_hw = tuple(images.shape[-2:])
+
+    t_render = time.time()
+    with torch.no_grad():
+        rendered = render_views_chunked(
+            gaussians, extrinsics, intrinsics, size_hw,
+            FLAGS.gs_rasterize_mode, FLAGS.gs_render_chunk,
+        )
+        # LPIPS holds a full trunk activation stack per image, so it is scored a
+        # view at a time (per_view_metrics already loops).
+        metrics = per_view_metrics(rendered, images, lpips_net=FLAGS.gs_lpips_net)
+    logger.info(f"[3dgs] rendered + scored {images.shape[1]} views in {time.time() - t_render:.1f}s")
+
+    ply_path = os.path.join(output_dir, "gaussians.ply")
+    if FLAGS.gs_dump_ply:
+        num_splats = dump_gaussians_ply(ply_path, gaussians, mask=pred["gaussians_valid"])
+    else:
+        # The count the dump would have written: the valid splats of batch item 0.
+        num_splats = int(pred["gaussians_valid"][0].sum())
+        ply_path += " (skipped: --nogs_dump_ply)"
+    sheets = dump_render_comparison(
+        os.path.join(output_dir, "render_compare"),
+        rendered, images, metrics, frame_ids=list(frame_ids),
+    )
+
+    # Aggregate over FINITE views only, and say how many were dropped. A single
+    # bad view must not turn a whole metric into NaN, but it must not vanish
+    # quietly either -- the count is reported next to the mean.
+    def finite_mean(values):
+        finite = values[np.isfinite(values)]
+        return (float(finite.mean()) if finite.size else float("nan")), int(values.size - finite.size)
+
+    psnr_mean, psnr_bad = finite_mean(metrics["psnr"])
+    ssim_mean, ssim_bad = finite_mean(metrics["ssim"])
+    lpips_mean, lpips_bad = finite_mean(metrics["lpips"])
+    pooled_mse, _ = finite_mean(metrics["mse"])
+    stats = {
+        "num_splats": int(num_splats),
+        "rasterize_mode": FLAGS.gs_rasterize_mode,
+        "lpips_net": FLAGS.gs_lpips_net,
+        "sh_degree": int(FLAGS.gs_sh_degree),
+        "note": "SELF-RENDER: the views scored are the views the model was given.",
+        "psnr_mean": psnr_mean,
+        "psnr_pooled": float(10.0 * np.log10(1.0 / max(pooled_mse, 1e-10))),
+        "ssim_mean": ssim_mean,
+        "lpips_mean": lpips_mean,
+        "nonfinite_views": {"psnr": psnr_bad, "ssim": ssim_bad, "lpips": lpips_bad},
+        "pixels_kept_by_2d_filter": float(pred["gaussians_pixel_mask"].float().mean()),
+        "per_view": [
+            {
+                "index": int(i),
+                "frame_id": int(frame_ids[i]),
+                "psnr": float(metrics["psnr"][i]),
+                "ssim": float(metrics["ssim"][i]),
+                "lpips": float(metrics["lpips"][i]),
+            }
+            for i in range(len(metrics["psnr"]))
+        ],
+    }
+    metrics_dir = os.path.join(output_dir, "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+    with open(os.path.join(metrics_dir, "gaussians.json"), "w") as f:
+        json.dump(stats, f, indent=2)
+
+    stats["_ply_path"] = ply_path
+    stats["_sheets"] = sheets
+    return stats
 
 
 def dump_and_eval(
@@ -267,6 +440,9 @@ def dump_and_eval(
     ply_path = os.path.join(output_dir, "pointcloud.ply")
     write_ply(ply_path, points, colors)
 
+    # --- 4b. Optional 3DGS: self-render the decoded scene, score it, dump it ------
+    gs_stats = dump_gaussian_scene(output_dir, pred, frame_ids) if "gaussians" in pred else None
+
     # --- 5. Evaluate against the dataset's advertised GT modalities (shared path) -
     metrics_dir = os.path.join(output_dir, "metrics")
     os.makedirs(metrics_dir, exist_ok=True)
@@ -312,6 +488,24 @@ def dump_and_eval(
         ]
     else:
         report.append("  mono depth: skipped (no DEPTH ground truth)")
+    if gs_stats is not None:
+        report += [
+            f"  3dgs: {gs_stats['num_splats']:,} splats -> {gs_stats['_ply_path']}",
+            f"  3dgs self-render ({gs_stats['rasterize_mode']}, lpips={gs_stats['lpips_net']}):",
+            f"    PSNR  {gs_stats['psnr_mean']:.2f} dB per-view mean "
+            f"({gs_stats['psnr_pooled']:.2f} dB pooled)",
+            f"    SSIM  {gs_stats['ssim_mean']:.4f}",
+            f"    LPIPS {gs_stats['lpips_mean']:.4f}",
+        ]
+        dropped = {k: v for k, v in gs_stats["nonfinite_views"].items() if v}
+        if dropped:
+            report.append(
+                "    non-finite views excluded from the means: "
+                + ", ".join(f"{k} {v}/{len(gs_stats['per_view'])}" for k, v in dropped.items())
+            )
+        report.append(
+            f"    {gs_stats['_sheets']} per-view sheets -> {os.path.join(output_dir, 'render_compare')}"
+        )
     report.append(f"  full metrics -> {os.path.join(metrics_dir, 'metrics.json')}")
     logger.info("\n".join(report))
 
@@ -330,9 +524,10 @@ def main():
 
     for seq_index in range(num_seqs):
         seq_name = dataset.sequence_name(seq_index)
-        frame_ids = resolve_frame_ids(dataset, seq_index, inf.num_frames)
+        frame_ids = resolve_frame_ids(dataset, seq_index, inf)
         logger.info(
-            f"[{seq_name}] ({seq_index + 1}/{num_seqs}) {len(frame_ids)} frames"
+            f"[{seq_name}] ({seq_index + 1}/{num_seqs}) {len(frame_ids)} frames: "
+            f"{frame_ids.tolist()}"
         )
 
         sample = load_sample(dataset, seq_index, frame_ids)

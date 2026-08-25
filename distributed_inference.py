@@ -139,7 +139,7 @@ def main():
 
     for seq_index in range(num_seqs):
         seq_name = dataset.sequence_name(seq_index)
-        frame_ids = common.resolve_frame_ids(dataset, seq_index, inf.num_frames)  # global, ordered
+        frame_ids = common.resolve_frame_ids(dataset, seq_index, inf)  # global, ordered
         local_ids = shard_frame_ids(frame_ids, rank, world_size)
         frame_index_offset = sum(frame_counts_for(len(frame_ids), world_size)[:rank])
 
