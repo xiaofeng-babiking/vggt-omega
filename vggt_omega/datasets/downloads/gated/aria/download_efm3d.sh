@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# EFM3D (Egocentric Foundation Model 3D benchmark) -- Meta. Email-gated (Project Aria).
+# EFM3D (Egocentric Foundation Model 3D benchmark) -- Meta Project Aria. NOT served by
+# explorer.projectaria.com; email-gated on projectaria.com (see README.md here).
 # Homepage: https://www.projectaria.com/research/efm3D/
 # Storage: ~200 GB (ASE train/eval subset + Aria Everyday Objects + eval meshes);
 #          the seq136 sample clip is ~1-2 GB.
 DATASET_NAME="efm3d"
-source "$(dirname "$0")/../common.sh"
+source "$(dirname "$0")/../../common.sh"
 
-DEST_DIR="$(resolve_dest "${1:-}" "efm3d")"
+DEST_DIR="$(resolve_dest "${1:-}" "aria/efm3d")"
 CDN_JSON="${CDN_JSON:-$DEST_DIR/efm3d_download_urls.json}"
 
 if [ ! -f "$CDN_JSON" ]; then

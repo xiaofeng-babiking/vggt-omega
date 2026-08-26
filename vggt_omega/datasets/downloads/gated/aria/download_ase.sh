@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Aria Synthetic Environments (ASE) / Project Aria datasets -- Meta.
+# Aria Synthetic Environments (ASE) -- Meta Project Aria. NOT served by explorer.projectaria.com
+# (see README.md here); still uses the per-dataset email form on projectaria.com.
 # Email-gated: you submit an email and receive a download-URLs JSON manifest.
 # Storage: ASE full ~2.5 TB (~100k scenes, ~25 MB/scene); a 0-100 scene slice is ~2-3 GB.
-DATASET_NAME="aria"
-source "$(dirname "$0")/../common.sh"
+DATASET_NAME="aria"   # keeps the uv env name envs/aria (projectaria-tools[all])
+source "$(dirname "$0")/../../common.sh"
 
-DEST_DIR="$(resolve_dest "${1:-}" "aria")"
+DEST_DIR="$(resolve_dest "${1:-}" "aria/ase")"
 CDN_JSON="${CDN_JSON:-$DEST_DIR/aria_synthetic_environments_dataset_download_urls.json}"
 
 if [ ! -f "$CDN_JSON" ]; then

@@ -24,7 +24,7 @@ Point the resulting path back at the matching `datasets/config/<dataset>.yaml`
 (`*_DIR` keys).
 
 `common.sh` lives at the top level and is sourced by every script as
-`../common.sh`. It holds the shared helpers (`fetch`, `resolve_dest`,
+`../common.sh` (`../../common.sh` from `gated/aria/`). It holds the shared helpers (`fetch`, `resolve_dest`,
 `manual_gate`, `hf_download`, plus the uv helpers below).
 
 ## Layout
@@ -36,6 +36,8 @@ downloads/
     download_<dataset>.sh
   gated/                    # license / key / account / manual step
     download_<dataset>.sh
+    aria/                   # Project Aria family (explorer.projectaria.com API, no email) -- see aria/README.md
+      download_<slug>.sh  aria_common.sh  aria_explorer_dl.py  launch_all.sh
   envs/                     # one uv env per Python-needing dataset (stays top-level)
     co3d/        pyproject.toml  uv.lock
     tartanair/   pyproject.toml  uv.lock
@@ -107,9 +109,10 @@ manual-access-only mapfree/mpsd/mapillary/bedlam/behavior1k/sail_vos and the
 | `gated/download_mapfree.sh` | Niantic page buttons | License click |
 | `gated/download_bedlam.sh` | MPI BEDLAM portal (login + license) | Account + license |
 | `gated/download_behavior1k.sh` | StanfordVL `setup.sh` (OmniGibson) | EULA (interactive) |
-| `gated/download_aria.sh` | Project Aria email JSON + tool | Email signup |
-| `gated/download_efm3d.sh` | Project Aria email JSON + repo | Email signup |
-| `gated/download_hot3d.sh` | Project Aria email JSON + tool | License + email |
+| `gated/aria/download_{adt,aea,aeo,dtc,dtc_objects,gen2pilot,aria_scenes,ritw,hot3d_aria,hot3d_quest,nymeria_plus,nymeria}.sh` | explorer.projectaria.com manifest API → `aria_explorer_dl.py` (aria2c, sha1) | License terms only (no email / login needed); see `gated/aria/README.md` |
+| `gated/aria/download_hot3d.sh` | umbrella: hot3d_aria + hot3d_quest, plus email-gated object models | License (+ email for object models) |
+| `gated/aria/download_ase.sh` | Project Aria email JSON + tool (ASE is not in the explorer) | Email signup |
+| `gated/aria/download_efm3d.sh` | Project Aria email JSON + repo (not in the explorer) | Email signup |
 | `gated/download_habitat.sh` | Matterport API token (HM3D) | Form + EULA + token |
 | `gated/download_mapillary_metropolis.sh` | Mapillary portal | Account + license |
 | `gated/download_mpsd.sh` | Mapillary portal | Account + license |

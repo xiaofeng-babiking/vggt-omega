@@ -1,0 +1,115 @@
+{
+ "crawled_utc": "2026-08-26",
+ "versions": [
+  {
+   "desc": "A real-world dataset with dynamic and photorealistic digital counterparts.",
+   "file": "ADT",
+   "folder": "ADT",
+   "gen": "Gen 1",
+   "image": "/static/aria-digital-twin.jpg",
+   "learn_more_url": "datasets/adt",
+   "name": "Aria Digital Twin",
+   "url_name": "adt"
+  },
+  {
+   "desc": "A large-scale multimodal egocentric dataset for full-body motion understanding.",
+   "file": "Nymeria",
+   "folder": "Nymeria",
+   "gen": "Gen 1",
+   "image": "/static/nymeria.png",
+   "learn_more_url": "datasets/nymeria",
+   "name": "Nymeria",
+   "url_name": "nymeria"
+  },
+  {
+   "desc": "Upgraded Nymeria dataset with optimized human motion in open formats, new annotations of object bounding boxes/meshes and additional data modalities.",
+   "file": "NymeriaPlus",
+   "folder": "NymeriaPlus",
+   "gen": "Gen 1",
+   "image": "/static/nymeriaplus.png",
+   "learn_more_url": "https://github.com/facebookresearch/nymeria_dataset",
+   "name": "NymeriaPlus",
+   "url_name": "nymeria_plus"
+  },
+  {
+   "desc": "A new benchmark dataset for researching vision-based hand-object interaction.",
+   "file": "Hot3DAria",
+   "folder": "Hot3DAria",
+   "gen": "Gen 1",
+   "image": "/static/hot3d-aria.png",
+   "learn_more_url": "datasets/hot3D",
+   "name": "HOT3D-Aria",
+   "url_name": "hot3d-aria"
+  },
+  {
+   "desc": "A new benchmark dataset for researching vision-based hand-object interaction.",
+   "file": "Hot3DQuest",
+   "folder": "Hot3DQuest",
+   "gen": "Gen 1",
+   "image": "/static/hot3d-quest.jpg",
+   "learn_more_url": "datasets/hot3D",
+   "name": "HOT3D-Quest",
+   "url_name": "hot3d-quest"
+  },
+  {
+   "desc": "The world's highest quality dataset for object reconstruction research.",
+   "file": "DTC",
+   "folder": "DTC",
+   "gen": "Gen 1",
+   "image": "/static/dtc.jpg",
+   "learn_more_url": "datasets/dtc",
+   "name": "DTC-Aria",
+   "url_name": "dtc"
+  },
+  {
+   "desc": "A small-scale, real-world Project Aria dataset with high quality 3D OBB annotations.",
+   "file": "AEO",
+   "folder": "AEO",
+   "gen": "Gen 1",
+   "image": "/static/aeo.png",
+   "learn_more_url": "datasets/aeo",
+   "name": "Aria Everyday Objects",
+   "url_name": "aeo"
+  },
+  {
+   "desc": "A re-release of Aria\u2019s first Pilot Dataset, updated with new tooling and location data, to accelerate the state of machine perception and AI.",
+   "file": "AriaEverydayActivities",
+   "folder": "AriaEverydayActivities",
+   "gen": "Gen 1",
+   "image": "/static/aea.jpg",
+   "learn_more_url": "datasets/aea",
+   "name": "Aria Everyday Activities",
+   "url_name": "aea"
+  },
+  {
+   "desc": "Large-scale multimodal dataset with diverse reading and non-reading activities, featuring high-frequency eye-tracking data.",
+   "file": "ReadingInTheWild",
+   "folder": "ReadingInTheWild",
+   "gen": "Gen 1",
+   "image": "/static/ritw.png",
+   "learn_more_url": "datasets/reading-in-the-wild",
+   "name": "Reading In The Wild",
+   "url_name": "ritw"
+  },
+  {
+   "desc": "Aria Scenes is a benchmark dataset for future research on photorealistic reconstruction. The dataset includes 12 .vrs files created in diverse indoor and outdoor environments.",
+   "file": "AriaScenes",
+   "folder": "AriaScenes",
+   "gen": "Gen 1",
+   "image": "/static/aria_scenes_logo.png",
+   "learn_more_url": "photoreal-reconstruction",
+   "name": "Aria Scenes",
+   "url_name": "aria-scenes"
+  },
+  {
+   "desc": "A dataset for understanding the fundamental capabilities of the Aria Gen 2 device for your research applications.",
+   "file": "AriaGen2PilotDataset",
+   "folder": "AriaGen2PilotDataset",
+   "gen": "Gen 2",
+   "image": "/static/gen2pilot.png",
+   "learn_more_url": "datasets/gen2pilot",
+   "name": "Aria Gen 2 Pilot Dataset",
+   "url_name": "gen2pilot"
+  }
+ ]
+}

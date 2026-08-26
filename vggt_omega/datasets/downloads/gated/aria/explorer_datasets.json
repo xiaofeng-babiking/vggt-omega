@@ -1,0 +1,1489 @@
+{
+ "crawled_utc": "2026-08-26",
+ "source": "https://explorer.projectaria.com/",
+ "api": {
+  "roster": "GET https://explorer.projectaria.com/versions",
+  "per_dataset": [
+   "GET /version_config/<slug>",
+   "GET /data/<slug>  (sequence metadata)",
+   "GET /data/<slug>/previews  (mp4 + rerun .rrd)",
+   "GET /data/<slug>/download_links  (signed CDN URLs + sha1 + bytes, ~30-day expiry)"
+  ],
+  "dtc_objects": "same endpoints on https://dtc.projectaria.com/ with slug 'objects'"
+ },
+ "grand_total_TB": 130.11,
+ "datasets": [
+  {
+   "slug": "adt",
+   "name": "Aria Digital Twin",
+   "gen": "Gen 1",
+   "desc": "A real-world dataset with dynamic and photorealistic digital counterparts.",
+   "release_prefix": "ADT",
+   "explorer_url": "https://explorer.projectaria.com/adt",
+   "learn_more_url": "https://www.projectaria.com/datasets/adt/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/aria_digital_twin_dataset",
+   "license_url": "https://www.projectaria.com/datasets/adt/license",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "adt_2023_cvpr",
+   "num_sequences": 236,
+   "num_files": 2832,
+   "total_duration_h": 8.13,
+   "total_bytes": 2281582033333,
+   "total_TB": 2.282,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 236,
+     "GB": 23.91,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 236,
+     "GB": 3.02,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 236,
+     "GB": 0.05,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 236,
+     "GB": 102.39,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 236,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_eye_gaze": {
+     "n": 236,
+     "GB": 0.03,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 236,
+     "GB": 105.48,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 236,
+     "GB": 432.73,
+     "files": null
+    },
+    "main_groundtruth": {
+     "n": 236,
+     "GB": 10.65,
+     "files": [
+      "2d_bounding_box.csv",
+      "2d_bounding_box_with_skeleton.csv",
+      "3d_bounding_box.csv",
+      "Skeleton_T.json",
+      "Skeleton_C.json",
+      "aria_trajectory.csv",
+      "eyegaze.csv",
+      "instances.json",
+      "metadata.json",
+      "scene_objects.csv",
+      "skeleton_aria_association.json"
+     ]
+    },
+    "segmentation": {
+     "n": 236,
+     "GB": 94.13,
+     "files": [
+      "segmentations.vrs",
+      "segmentations_with_skeleton.vrs"
+     ]
+    },
+    "depth": {
+     "n": 236,
+     "GB": 1300.87,
+     "files": [
+      "depth_images.vrs",
+      "depth_images_with_skeleton.vrs"
+     ]
+    },
+    "synthetic": {
+     "n": 236,
+     "GB": 208.32,
+     "files": [
+      "synthetic_video.vrs"
+     ]
+    }
+   },
+   "main": {
+    "recording": "video.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "scene",
+    "activity",
+    "device_serial",
+    "duration_s",
+    "is_multi_person",
+    "num_skeletons",
+    "gt_creation_time",
+    "visible_object_names",
+    "visible_object_categories",
+    "object_names_interacted_with",
+    "object_categories_interacted_with",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "scene",
+    "activity",
+    "is_multi_person",
+    "duration_s",
+    "computed.trajectory_length_m"
+   ]
+  },
+  {
+   "slug": "nymeria",
+   "name": "Nymeria",
+   "gen": "Gen 1",
+   "desc": "A large-scale multimodal egocentric dataset for full-body motion understanding.",
+   "release_prefix": "v0.0",
+   "explorer_url": "https://explorer.projectaria.com/nymeria",
+   "learn_more_url": "https://www.projectaria.com/datasets/nymeria/",
+   "about_url": "https://www.projectaria.com/datasets/nymeria/",
+   "license_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+   "download_instructions": "https://github.com/facebookresearch/nymeria_dataset?tab=readme-ov-file#getting-started",
+   "downloads_enabled": true,
+   "logging_dataset_type": "nymeria_2024_cvpr",
+   "num_sequences": 1100,
+   "num_files": 15109,
+   "total_duration_h": 340.05,
+   "total_bytes": 51338518746846,
+   "total_TB": 51.339,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 1100,
+     "GB": 1055.47,
+     "files": null
+    },
+    "body_motion": {
+     "n": 1100,
+     "GB": 1085.63,
+     "files": [
+      "body/xdata.npz",
+      "body/xdata_blueman.glb"
+     ]
+    },
+    "recording_head": {
+     "n": 1100,
+     "GB": 758.15,
+     "files": [
+      "recording_head/data/motion.vrs",
+      "recording_head/data/et.vrs",
+      "recording_head/mps/slam/closed_loop_trajectory.csv",
+      "recording_head/mps/slam/semidense_points.csv.gz",
+      "recording_head/mps/slam/summary.json",
+      "recording_head/mps/slam/online_calibration.jsonl",
+      "recording_head/mps/eye_gaze"
+     ]
+    },
+    "recording_lwrist": {
+     "n": 1100,
+     "GB": 451.82,
+     "files": [
+      "recording_lwrist/data/motion.vrs",
+      "recording_lwrist/mps/slam/closed_loop_trajectory.csv",
+      "recording_lwrist/mps/slam/semidense_points.csv.gz",
+      "recording_lwrist/mps/slam/summary.json",
+      "recording_lwrist/mps/slam/online_calibration.jsonl"
+     ]
+    },
+    "recording_rwrist": {
+     "n": 1100,
+     "GB": 467.47,
+     "files": [
+      "recording_rwrist/data/motion.vrs",
+      "recording_rwrist/mps/slam/closed_loop_trajectory.csv",
+      "recording_rwrist/mps/slam/semidense_points.csv.gz",
+      "recording_rwrist/mps/slam/summary.json",
+      "recording_rwrist/mps/slam/online_calibration.jsonl"
+     ]
+    },
+    "recording_observer": {
+     "n": 1100,
+     "GB": 616.09,
+     "files": [
+      "recording_observer/data/motion.vrs",
+      "recording_observer/data/et.vrs",
+      "recording_observer/mps/slam/closed_loop_trajectory.csv",
+      "recording_observer/mps/slam/semidense_points.csv.gz",
+      "recording_observer/mps/slam/summary.json",
+      "recording_observer/mps/slam/online_calibration.jsonl",
+      "recording_observer/mps/eye_gaze"
+     ]
+    },
+    "semidense_observations": {
+     "n": 1100,
+     "GB": 11620.28,
+     "files": [
+      "recording_head/mps/slam/semidense_observations.csv.gz",
+      "recording_lwrist/mps/slam/semidense_observations.csv.gz",
+      "recording_rwrist/mps/slam/semidense_observations.csv.gz",
+      "recording_observer/mps/slam/semidense_observations.csv.gz"
+     ]
+    },
+    "LICENSE": {
+     "n": 1100,
+     "GB": 0.02,
+     "files": null
+    },
+    "metadata_json": {
+     "n": 1100,
+     "GB": 0.0,
+     "files": null
+    },
+    "narration_atomic_action_csv": {
+     "n": 845,
+     "GB": 0.05,
+     "files": null
+    },
+    "narration_activity_summarization_csv": {
+     "n": 864,
+     "GB": 0.01,
+     "files": null
+    },
+    "recording_head_data_data_vrs": {
+     "n": 1100,
+     "GB": 17060.36,
+     "files": null
+    },
+    "recording_observer_data_data_vrs": {
+     "n": 1100,
+     "GB": 16263.5,
+     "files": null
+    },
+    "body_xdata_mvnx": {
+     "n": 1064,
+     "GB": 1959.66,
+     "files": null
+    },
+    "narration_motion_narration_csv": {
+     "n": 236,
+     "GB": 0.02,
+     "files": null
+    }
+   },
+   "main": {
+    "recording": "recording_head/data/data.vrs",
+    "mps": "recording_head/mps"
+   },
+   "ungrouped_files": [
+    "LICENSE",
+    "metadata.json",
+    "narration/motion_narration.csv",
+    "narration/atomic_action.csv",
+    "narration/activity_summarization.csv",
+    "recording_head/data/data.vrs",
+    "recording_observer/data/data.vrs",
+    "body/xdata.mvnx"
+   ],
+   "metadata_fields": [
+    "sequence_uid",
+    "motion_narration",
+    "atomic_action",
+    "activity_summarization",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "date",
+    "participant_id",
+    "act_id",
+    "location",
+    "script",
+    "action_duration_sec",
+    "has_two_participants",
+    "pt2",
+    "participant_gender",
+    "participant_height_cm",
+    "participant_weight_kg",
+    "participant_bmi",
+    "participant_age_group",
+    "participant_ethnicity",
+    "participant_xsens_suit_size",
+    "body_motion",
+    "head_data",
+    "head_slam",
+    "head_trajectory_m",
+    "head_duration_sec",
+    "head_personalized_gaze",
+    "left_wrist_data",
+    "left_wrist_slam",
+    "left_wrist_trajectory_m",
+    "left_wrist_duration_sec",
+    "right_wrist_data",
+    "right_wrist_slam",
+    "right_wrist_trajectory_m",
+    "right_wrist_duration_sec",
+    "observer_data",
+    "observer_slam",
+    "observer_personalized_gaze",
+    "observer_trajectory_m",
+    "observer_duration_sec",
+    "has_timesync"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "location",
+    "script",
+    "action_duration_sec",
+    "head_trajectory_m",
+    "participant_height_cm",
+    "participant_weight_kg"
+   ]
+  },
+  {
+   "slug": "nymeria_plus",
+   "name": "NymeriaPlus",
+   "gen": "Gen 1",
+   "desc": "Upgraded Nymeria dataset with optimized human motion in open formats, new annotations of object bounding boxes/meshes and additional data modalities.",
+   "release_prefix": "v1.0",
+   "explorer_url": "https://explorer.projectaria.com/nymeria_plus",
+   "learn_more_url": "https://github.com/facebookresearch/nymeria_dataset",
+   "about_url": "https://github.com/facebookresearch/nymeria_dataset",
+   "license_url": null,
+   "download_instructions": "https://github.com/facebookresearch/nymeria_dataset?tab=readme-ov-file#getting-started",
+   "downloads_enabled": true,
+   "logging_dataset_type": "nymeria_plus_2026_cvpr",
+   "num_sequences": 1100,
+   "num_files": 18683,
+   "total_duration_h": 340.05,
+   "total_bytes": 67730317529123,
+   "total_TB": 67.73,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 1100,
+     "GB": 1076.18,
+     "files": null
+    },
+    "body_raw": {
+     "n": 1100,
+     "GB": 1289.84,
+     "files": [
+      "body/xdata.healthcheck",
+      "body/xdata.mvnx",
+      "body/xdata.npz"
+     ]
+    },
+    "body_processed": {
+     "n": 1100,
+     "GB": 350.46,
+     "files": [
+      "body/xdata_mhr.glb",
+      "body/xdata_smpl_neutral.npz"
+     ]
+    },
+    "slam": {
+     "n": 1100,
+     "GB": 1696.04,
+     "files": [
+      "recording_head/mps/slam/closed_loop_trajectory.csv",
+      "recording_head/mps/slam/open_loop_trajectory.csv",
+      "recording_head/mps/slam/semidense_points.csv.gz",
+      "recording_head/mps/slam/summary.json",
+      "recording_head/mps/slam/online_calibration.jsonl",
+      "recording_lwrist/mps/slam/closed_loop_trajectory.csv",
+      "recording_lwrist/mps/slam/open_loop_trajectory.csv",
+      "recording_lwrist/mps/slam/semidense_points.csv.gz",
+      "recording_lwrist/mps/slam/summary.json",
+      "recording_lwrist/mps/slam/online_calibration.jsonl",
+      "recording_rwrist/mps/slam/closed_loop_trajectory.csv",
+      "recording_rwrist/mps/slam/open_loop_trajectory.csv",
+      "recording_rwrist/mps/slam/semidense_points.csv.gz",
+      "recording_rwrist/mps/slam/summary.json",
+      "recording_rwrist/mps/slam/online_calibration.jsonl",
+      "recording_observer/mps/slam/closed_loop_trajectory.csv",
+      "recording_observer/mps/slam/open_loop_trajectory.csv",
+      "recording_observer/mps/slam/semidense_points.csv.gz",
+      "recording_observer/mps/slam/summary.json",
+      "recording_observer/mps/slam/online_calibration.jsonl"
+     ]
+    },
+    "slam_semidense_observations": {
+     "n": 1100,
+     "GB": 11620.28,
+     "files": [
+      "recording_head/mps/slam/semidense_observations.csv.gz",
+      "recording_lwrist/mps/slam/semidense_observations.csv.gz",
+      "recording_rwrist/mps/slam/semidense_observations.csv.gz",
+      "recording_observer/mps/slam/semidense_observations.csv.gz"
+     ]
+    },
+    "timesync_and_imu": {
+     "n": 1100,
+     "GB": 350.96,
+     "files": [
+      "recording_head/data/motion.vrs",
+      "recording_lwrist/data/motion.vrs",
+      "recording_rwrist/data/motion.vrs",
+      "recording_observer/data/motion.vrs"
+     ]
+    },
+    "audio": {
+     "n": 1100,
+     "GB": 2473.18,
+     "files": [
+      "recording_head/data/audio.vrs",
+      "recording_observer/data/audio.vrs"
+     ]
+    },
+    "eye_tracking": {
+     "n": 1100,
+     "GB": 435.25,
+     "files": [
+      "recording_head/data/et.vrs",
+      "recording_head/mps/eye_gaze",
+      "recording_observer/data/et.vrs",
+      "recording_observer/mps/eye_gaze"
+     ]
+    },
+    "object_bounding_box": {
+     "n": 1100,
+     "GB": 124.94,
+     "files": [
+      "objects/boxy"
+     ]
+    },
+    "object_mesh": {
+     "n": 1100,
+     "GB": 37.58,
+     "files": [
+      "objects/shaper"
+     ]
+    },
+    "narration": {
+     "n": 1100,
+     "GB": 0.01,
+     "files": [
+      "narration"
+     ]
+    },
+    "LICENSE": {
+     "n": 1100,
+     "GB": 0.04,
+     "files": null
+    },
+    "metadata_json": {
+     "n": 1100,
+     "GB": 0.0,
+     "files": null
+    },
+    "recording_head_data_data_vrs": {
+     "n": 1100,
+     "GB": 18385.93,
+     "files": null
+    },
+    "recording_lwrist_data_data_vrs": {
+     "n": 1094,
+     "GB": 6257.16,
+     "files": null
+    },
+    "recording_rwrist_data_data_vrs": {
+     "n": 1089,
+     "GB": 6137.09,
+     "files": null
+    },
+    "recording_observer_data_data_vrs": {
+     "n": 1100,
+     "GB": 17495.37,
+     "files": null
+    }
+   },
+   "main": {
+    "recording": "recording_head/data/data.vrs",
+    "mps": "recording_head/mps"
+   },
+   "ungrouped_files": [
+    "LICENSE",
+    "metadata.json",
+    "recording_head/data/data.vrs",
+    "recording_lwrist/data/data.vrs",
+    "recording_rwrist/data/data.vrs",
+    "recording_observer/data/data.vrs"
+   ],
+   "metadata_fields": [
+    "sequence_uid",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "date",
+    "location",
+    "script",
+    "action_duration_sec",
+    "has_two_participants",
+    "head_data",
+    "head_slam",
+    "head_trajectory_m",
+    "head_duration_sec",
+    "head_general_gaze",
+    "head_personalized_gaze",
+    "left_wrist_data",
+    "left_wrist_motion",
+    "left_wrist_slam",
+    "left_wrist_trajectory_m",
+    "left_wrist_duration_sec",
+    "right_wrist_data",
+    "right_wrist_motion",
+    "right_wrist_slam",
+    "right_wrist_trajectory_m",
+    "right_wrist_duration_sec",
+    "observer_data",
+    "observer_slam",
+    "observer_general_gaze",
+    "observer_personalized_gaze",
+    "observer_trajectory_m",
+    "observer_duration_sec",
+    "timesync",
+    "motion_narration",
+    "atomic_action",
+    "activity_summarization",
+    "participant_gender",
+    "participant_height_cm",
+    "participant_weight_kg",
+    "participant_bmi",
+    "participant_age_group",
+    "participant_ethnicity",
+    "participant_xsens_suit_size",
+    "body_motion_xsens",
+    "body_motion_mhr",
+    "body_motion_smpl",
+    "objects_bounding_box",
+    "objects_shaper_mesh"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "location",
+    "script",
+    "action_duration_sec",
+    "body_motion_mhr",
+    "objects_bounding_box",
+    "objects_shaper_mesh"
+   ]
+  },
+  {
+   "slug": "hot3d-aria",
+   "name": "HOT3D-Aria",
+   "gen": "Gen 1",
+   "desc": "A new benchmark dataset for researching vision-based hand-object interaction.",
+   "release_prefix": "v4.0.0",
+   "explorer_url": "https://explorer.projectaria.com/hot3d-aria",
+   "learn_more_url": "https://www.projectaria.com/datasets/hot3D/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/hot3d",
+   "license_url": "https://www.projectaria.com/datasets/hot3d/license/",
+   "download_instructions": "https://github.com/facebookresearch/hot3d?tab=readme-ov-file#step-1-install-the-downloader",
+   "downloads_enabled": true,
+   "logging_dataset_type": "hot3d_2024_cvpr",
+   "num_sequences": 198,
+   "num_files": 1980,
+   "total_duration_h": 6.51,
+   "total_bytes": 526344830374,
+   "total_TB": 0.526,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 198,
+     "GB": 17.78,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 198,
+     "GB": 5.06,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 198,
+     "GB": 0.04,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 198,
+     "GB": 83.65,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 198,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_eye_gaze": {
+     "n": 198,
+     "GB": 0.05,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 198,
+     "GB": 88.79,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 198,
+     "GB": 329.36,
+     "files": null
+    },
+    "ground_truth": {
+     "n": 198,
+     "GB": 0.67,
+     "files": [
+      "box2d_hands.csv",
+      "box2d_objects.csv",
+      "dynamic_objects.csv",
+      "headset_trajectory.csv",
+      "metadata.json",
+      "camera_models.json",
+      "masks/mask_good_exposure.csv",
+      "masks/mask_hand_pose_available.csv",
+      "masks/mask_hand_visible.csv",
+      "masks/mask_headset_pose_available.csv",
+      "masks/mask_object_pose_available.csv",
+      "masks/mask_object_visible.csv",
+      "masks/mask_qa_pass.csv",
+      "timecode_devicetime_mapping.csv",
+      "license.txt"
+     ]
+    },
+    "hand_data": {
+     "n": 198,
+     "GB": 0.96,
+     "files": [
+      "umetrack_hand_pose_trajectory.jsonl",
+      "umetrack_hand_user_profile.json",
+      "mano_hand_pose_trajectory.jsonl",
+      "license.txt"
+     ]
+    }
+   },
+   "main": {
+    "recording": "recording.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "device_serial",
+    "duration_s",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean",
+    "have_hand_object_pose_gt",
+    "participant_id",
+    "object_bop_uids",
+    "object_names",
+    "object_uids"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "computed.trajectory_length_m",
+    "object_names"
+   ]
+  },
+  {
+   "slug": "hot3d-quest",
+   "name": "HOT3D-Quest",
+   "gen": "Gen 1",
+   "desc": "A new benchmark dataset for researching vision-based hand-object interaction.",
+   "release_prefix": "v4.0.0",
+   "explorer_url": "https://explorer.projectaria.com/hot3d-quest",
+   "learn_more_url": "https://www.projectaria.com/datasets/hot3D/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/hot3d",
+   "license_url": "https://www.projectaria.com/datasets/hot3d/license/",
+   "download_instructions": "https://github.com/facebookresearch/hot3d?tab=readme-ov-file#step-1-install-the-downloader",
+   "downloads_enabled": true,
+   "logging_dataset_type": "hot3d_2024_cvpr",
+   "num_sequences": 226,
+   "num_files": 904,
+   "total_duration_h": 0.0,
+   "total_bytes": 393827287976,
+   "total_TB": 0.394,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 226,
+     "GB": 7.24,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 226,
+     "GB": 385.66,
+     "files": null
+    },
+    "ground_truth": {
+     "n": 226,
+     "GB": 0.4,
+     "files": [
+      "box2d_hands.csv",
+      "box2d_objects.csv",
+      "dynamic_objects.csv",
+      "headset_trajectory.csv",
+      "metadata.json",
+      "camera_models.json",
+      "masks/mask_good_exposure.csv",
+      "masks/mask_hand_pose_available.csv",
+      "masks/mask_hand_visible.csv",
+      "masks/mask_headset_pose_available.csv",
+      "masks/mask_object_pose_available.csv",
+      "masks/mask_object_visible.csv",
+      "masks/mask_qa_pass.csv",
+      "license.txt"
+     ]
+    },
+    "hand_data": {
+     "n": 226,
+     "GB": 0.52,
+     "files": [
+      "umetrack_hand_pose_trajectory.jsonl",
+      "umetrack_hand_user_profile.json",
+      "mano_hand_pose_trajectory.jsonl",
+      "license.txt"
+     ]
+    }
+   },
+   "main": {
+    "recording": "recording.vrs",
+    "mps": "None"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "have_hand_object_pose_gt",
+    "participant_id",
+    "object_bop_uids",
+    "object_names",
+    "object_uids"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "have_hand_object_pose_gt",
+    "participant_id",
+    "object_names"
+   ]
+  },
+  {
+   "slug": "dtc",
+   "name": "DTC-Aria",
+   "gen": "Gen 1",
+   "desc": "The world's highest quality dataset for object reconstruction research.",
+   "release_prefix": "v1.0.1",
+   "explorer_url": "https://explorer.projectaria.com/dtc",
+   "learn_more_url": "https://www.projectaria.com/datasets/dtc/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/digital_twin_catalog",
+   "license_url": "https://www.projectaria.com/datasets/dtc/license",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "dtc_2024_eccv",
+   "num_sequences": 200,
+   "num_files": 1600,
+   "total_duration_h": 1.65,
+   "total_bytes": 307020639527,
+   "total_TB": 0.307,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 200,
+     "GB": 23.53,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 200,
+     "GB": 0.65,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 200,
+     "GB": 0.01,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 200,
+     "GB": 4.42,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 200,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 200,
+     "GB": 5.08,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 200,
+     "GB": 273.32,
+     "files": null
+    },
+    "main_groundtruth": {
+     "n": 200,
+     "GB": 0.0,
+     "files": [
+      "object_pose.json",
+      "metadata.json",
+      "CC_BY-SA.txt"
+     ]
+    }
+   },
+   "main": {
+    "recording": "video.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": [],
+   "metadata_fields": [
+    "sequence_uid",
+    "device_serial",
+    "duration_s",
+    "mode",
+    "model_name",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "mode",
+    "model_name"
+   ]
+  },
+  {
+   "slug": "aeo",
+   "name": "Aria Everyday Objects",
+   "gen": "Gen 1",
+   "desc": "A small-scale, real-world Project Aria dataset with high quality 3D OBB annotations.",
+   "release_prefix": "1.0.2",
+   "explorer_url": "https://explorer.projectaria.com/aeo",
+   "learn_more_url": "https://www.projectaria.com/datasets/aeo/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/aria_everyday_objects",
+   "license_url": "https://www.projectaria.com/datasets/aeo/license",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "aeo_2024_eccv",
+   "num_sequences": 25,
+   "num_files": 100,
+   "total_duration_h": 0.76,
+   "total_bytes": 18654686475,
+   "total_TB": 0.019,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 25,
+     "GB": 2.86,
+     "files": null
+    },
+    "mps": {
+     "n": 25,
+     "GB": 2.44,
+     "files": [
+      "mps/slam/closed_loop_trajectory.csv",
+      "mps/slam/online_calibration.jsonl",
+      "mps/slam/semidense_points.csv.gz",
+      "mps/slam/semidense_observations.csv.gz"
+     ]
+    },
+    "main_groundtruth": {
+     "n": 25,
+     "GB": 0.03,
+     "files": [
+      "2d_bounding_box.csv",
+      "3d_bounding_box.csv",
+      "instances.json",
+      "scene_objects.csv"
+     ]
+    },
+    "main_vrs": {
+     "n": 25,
+     "GB": 13.33,
+     "files": null
+    }
+   },
+   "main": {
+    "recording": "main.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": [
+    "main.vrs"
+   ],
+   "metadata_fields": [
+    "sequence_uid",
+    "device_serial",
+    "duration_s",
+    "scene",
+    "visible_object_names",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "computed.trajectory_length_m",
+    "visible_object_names"
+   ]
+  },
+  {
+   "slug": "aea",
+   "name": "Aria Everyday Activities",
+   "gen": "Gen 1",
+   "desc": "A re-release of Aria\u2019s first Pilot Dataset, updated with new tooling and location data, to accelerate the state of machine perception and AI.",
+   "release_prefix": "1.0.0",
+   "explorer_url": "https://explorer.projectaria.com/aea",
+   "learn_more_url": "https://www.projectaria.com/datasets/aea/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/aria_everyday_activities_dataset",
+   "license_url": "https://www.projectaria.com/datasets/aea/license",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "aea_2024",
+   "num_sequences": 143,
+   "num_files": 1287,
+   "total_duration_h": 7.58,
+   "total_bytes": 396929040415,
+   "total_TB": 0.397,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 143,
+     "GB": 19.84,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 143,
+     "GB": 2.97,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 143,
+     "GB": 0.18,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 143,
+     "GB": 30.92,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 143,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_eye_gaze": {
+     "n": 143,
+     "GB": 0.01,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 143,
+     "GB": 34.08,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 143,
+     "GB": 308.93,
+     "files": null
+    },
+    "annotations": {
+     "n": 143,
+     "GB": 0.0,
+     "files": [
+      "speech.csv",
+      "metadata.json"
+     ]
+    }
+   },
+   "main": {
+    "recording": "recording.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "device_serial",
+    "duration_s",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "computed.trajectory_length_m"
+   ]
+  },
+  {
+   "slug": "ritw",
+   "name": "Reading In The Wild",
+   "gen": "Gen 1",
+   "desc": "Large-scale multimodal dataset with diverse reading and non-reading activities, featuring high-frequency eye-tracking data.",
+   "release_prefix": "v1.0",
+   "explorer_url": "https://explorer.projectaria.com/ritw",
+   "learn_more_url": "https://www.projectaria.com/datasets/reading-in-the-wild/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/docs/open_datasets/ritw",
+   "license_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "ritw_2025_cvpr",
+   "num_sequences": 987,
+   "num_files": 3948,
+   "total_duration_h": 78.71,
+   "total_bytes": 6827269964394,
+   "total_TB": 6.827,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 987,
+     "GB": 192.1,
+     "files": null
+    },
+    "recording_vrs": {
+     "n": 987,
+     "GB": 4442.33,
+     "files": [
+      "recording.vrs"
+     ]
+    },
+    "metadata_json": {
+     "n": 987,
+     "GB": 0.0,
+     "files": [
+      "metadata.json"
+     ]
+    },
+    "mps": {
+     "n": 987,
+     "GB": 2192.84,
+     "files": [
+      "mps"
+     ]
+    }
+   },
+   "main": {
+    "recording": "recording.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "duration_s",
+    "upload_date",
+    "task",
+    "campaign_task_name",
+    "mode",
+    "medium",
+    "material",
+    "reading",
+    "calibration_success",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "task",
+    "reading"
+   ]
+  },
+  {
+   "slug": "aria-scenes",
+   "name": "Aria Scenes",
+   "gen": "Gen 1",
+   "desc": "Aria Scenes is a benchmark dataset for future research on photorealistic reconstruction. The dataset includes 12 .vrs files created in diverse indoor and outdoor environments.",
+   "release_prefix": "v0.2",
+   "explorer_url": "https://explorer.projectaria.com/aria-scenes",
+   "learn_more_url": "https://www.projectaria.com/photoreal-reconstruction/",
+   "about_url": "https://www.projectaria.com/photoreal-reconstruction/",
+   "license_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "photoreal_reconstruction_2025_cvpr",
+   "num_sequences": 12,
+   "num_files": 84,
+   "total_duration_h": 0.54,
+   "total_bytes": 133175851568,
+   "total_TB": 0.133,
+   "link_expiry_utc": [
+    "2026-08-26"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 12,
+     "GB": 17.98,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 12,
+     "GB": 0.31,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 12,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 12,
+     "GB": 3.08,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 12,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 12,
+     "GB": 3.39,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 12,
+     "GB": 108.41,
+     "files": null
+    }
+   },
+   "main": {
+    "recording": "recording.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "duration_s",
+    "sensor.slam_camera_fps"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "duration_s",
+    "sensor.slam_camera_fps"
+   ]
+  },
+  {
+   "slug": "gen2pilot",
+   "name": "Aria Gen 2 Pilot Dataset",
+   "gen": "Gen 2",
+   "desc": "A dataset for understanding the fundamental capabilities of the Aria Gen 2 device for your research applications.",
+   "release_prefix": "v1.0",
+   "explorer_url": "https://explorer.projectaria.com/gen2pilot",
+   "learn_more_url": "https://www.projectaria.com/datasets/gen2pilot/",
+   "about_url": "https://facebookresearch.github.io/projectaria_tools/gen2/research-tools/dataset/pilot/content",
+   "license_url": "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+   "download_instructions": null,
+   "downloads_enabled": true,
+   "logging_dataset_type": "gen2pilot_iccv_2025",
+   "num_sequences": 12,
+   "num_files": 156,
+   "total_duration_h": 1.1,
+   "total_bytes": 158914022377,
+   "total_TB": 0.159,
+   "link_expiry_utc": [
+    "2026-09-24"
+   ],
+   "data_groups": {
+    "video_main_rgb": {
+     "n": 12,
+     "GB": 9.79,
+     "files": null
+    },
+    "mps_slam_trajectories": {
+     "n": 12,
+     "GB": 0.4,
+     "files": null
+    },
+    "mps_slam_calibration": {
+     "n": 12,
+     "GB": 0.01,
+     "files": null
+    },
+    "mps_slam_points": {
+     "n": 12,
+     "GB": 44.21,
+     "files": null
+    },
+    "mps_slam_summary": {
+     "n": 12,
+     "GB": 0.0,
+     "files": null
+    },
+    "mps_hand_tracking": {
+     "n": 12,
+     "GB": 0.04,
+     "files": null
+    },
+    "mps_artifacts": {
+     "n": 12,
+     "GB": 44.65,
+     "files": null
+    },
+    "main_vrs": {
+     "n": 12,
+     "GB": 34.87,
+     "files": null
+    },
+    "depth": {
+     "n": 12,
+     "GB": 24.91,
+     "files": [
+      "depth/pinhole_camera_parameters.json",
+      "depth/depth",
+      "depth/rectified_images",
+      "depth/summary.json"
+     ]
+    },
+    "scene": {
+     "n": 12,
+     "GB": 0.02,
+     "files": [
+      "scene/2d_bounding_box.csv",
+      "scene/3d_bounding_box.csv",
+      "scene/instances.json",
+      "scene/scene_objects.csv",
+      "scene/summary.json"
+     ]
+    },
+    "heart_rate": {
+     "n": 12,
+     "GB": 0.0,
+     "files": [
+      "heart_rate/heart_rate_results.csv",
+      "heart_rate/summary.json"
+     ]
+    },
+    "diarization": {
+     "n": 12,
+     "GB": 0.0,
+     "files": [
+      "diarization/diarization_results.csv",
+      "diarization/summary.json"
+     ]
+    },
+    "hand_object_interaction": {
+     "n": 12,
+     "GB": 0.02,
+     "files": [
+      "hand_object_interaction/hand_object_interaction_results.json",
+      "hand_object_interaction/summary.json"
+     ]
+    }
+   },
+   "main": {
+    "recording": "video.vrs",
+    "mps": "mps"
+   },
+   "ungrouped_files": null,
+   "metadata_fields": [
+    "sequence_uid",
+    "Scene",
+    "Is_multi_person",
+    "device_time_alignment_host",
+    "device_time_alignment_client",
+    "device_serial",
+    "duration_s",
+    "computed.light_intensity_lux_median",
+    "computed.trajectory_length_m",
+    "computed.covered_area_m2",
+    "computed.covered_volume_m3",
+    "computed.speed_mps_mean"
+   ],
+   "default_fields": [
+    "sequence_uid",
+    "Scene",
+    "Is_multi_person",
+    "device_time_alignment_host"
+   ]
+  }
+ ],
+ "dtc_object_explorer": {
+  "slug": "objects",
+  "site": "https://dtc.projectaria.com/",
+  "name": "DTC Object Explorer (Digital Twin Catalog object library)",
+  "about_url": "https://www.projectaria.com/datasets/dtc/",
+  "license_url": "https://www.projectaria.com/datasets/dtc/license",
+  "downloads_enabled": true,
+  "metadata_fields": [
+   "object_uid",
+   "release",
+   "category",
+   "license",
+   "avg_metallic",
+   "avg_roughness",
+   "texture",
+   "num_vertices",
+   "num_triangles"
+  ],
+  "releases": {
+   "DTC": {
+    "num_objects": 1999,
+    "num_files": 9973,
+    "GB": 146.46,
+    "num_objects_in_metadata": 1999
+   },
+   "ADT": {
+    "num_objects": 400,
+    "num_files": 1200,
+    "GB": 5.45,
+    "num_objects_in_metadata": 400
+   }
+  },
+  "num_objects": 2399,
+  "total_GB": 151.91,
+  "link_expiry_utc": [
+   "2026-09-24"
+  ],
+  "file_types": {
+   "3d-asset_glb": {
+    "n": 2399,
+    "GB": 117.97,
+    "example": "DTC_1_1_Bowl_B0C7MFSFF7_WhiteWithThreeOvals_TU_3d-asset.glb"
+   },
+   "3d-asset-manifold_glb": {
+    "n": 1988,
+    "GB": 33.17,
+    "example": "DTC_1_1_Bowl_B0C7MFSFF7_WhiteWithThreeOvals_TU_3d-asset-manifold.glb"
+   },
+   "3d-asset-manifold-10k_glb": {
+    "n": 1988,
+    "GB": 0.72,
+    "example": "DTC_1_1_Bowl_B0C7MFSFF7_WhiteWithThreeOvals_TU_3d-asset-manifold-10k.glb"
+   },
+   "license": {
+    "n": 2399,
+    "GB": 0.05,
+    "example": "DTC_1_1_Bowl_B0C7MFSFF7_WhiteWithThreeOvals_TU_CC_BY-SA.txt"
+   },
+   "metadata": {
+    "n": 2399,
+    "GB": 0.0,
+    "example": "DTC_1_1_Bowl_B0C7MFSFF7_WhiteWithThreeOvals_TU_metadata.json"
+   }
+  },
+  "top_categories": [
+   [
+    "?",
+    400
+   ],
+   [
+    "building blocks",
+    128
+   ],
+   [
+    "shoes",
+    121
+   ],
+   [
+    "bowl",
+    106
+   ],
+   [
+    "dino",
+    103
+   ],
+   [
+    "birdhouse",
+    102
+   ],
+   [
+    "vase",
+    101
+   ],
+   [
+    "teapot",
+    99
+   ],
+   [
+    "fakefruit",
+    96
+   ],
+   [
+    "figurine",
+    77
+   ],
+   [
+    "fakefoodcan",
+    69
+   ],
+   [
+    "basketball",
+    55
+   ],
+   [
+    "cup",
+    54
+   ],
+   [
+    "marker",
+    54
+   ],
+   [
+    "mouse",
+    52
+   ],
+   [
+    "volleyball",
+    52
+   ],
+   [
+    "dish",
+    51
+   ],
+   [
+    "gargoyle",
+    50
+   ],
+   [
+    "football",
+    48
+   ],
+   [
+    "mallard (fake duck)",
+    48
+   ]
+  ],
+  "licenses": {
+   "CC_BY-SA": 2399
+  }
+ }
+}
