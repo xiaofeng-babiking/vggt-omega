@@ -98,14 +98,18 @@ fetch() {
                 ;;
         esac
     fi
+    # DIRECT ONLY (policy): every downloader here bypasses any proxy, even when
+    # http_proxy/https_proxy/all_proxy are exported in the environment. wget's
+    # --no-proxy and curl's --noproxy '*' disable proxy use unconditionally, so
+    # a transfer connects directly or fails -- it is never routed via a proxy.
     if command -v wget >/dev/null 2>&1; then
-        local wargs=(--continue --tries=5 --timeout=60)
+        local wargs=(--continue --tries=5 --timeout=60 --no-proxy)
         for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do wargs+=(--header="$hdr"); done
         wget "${wargs[@]}" -O "$out" "$url" && return 0
         command -v curl >/dev/null 2>&1 && warn "wget failed for $url -- falling back to curl"
     fi
     if command -v curl >/dev/null 2>&1; then
-        local cargs=(-L --fail --retry 5 --continue-at -)
+        local cargs=(-L --fail --retry 5 --continue-at - --noproxy '*')
         for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do cargs+=(-H "$hdr"); done
         curl "${cargs[@]}" -o "$out" "$url" && return 0
         return 1
@@ -131,8 +135,10 @@ fetch_retry() {
 
 # Segmented multi-connection download with resume, for hosts that throttle
 # per connection (NAVER ~150 KB/s/stream, Cornell ~0.7 MB/s/stream; 8-way
-# measured 5-18x faster). Tries direct first -- both hosts stall through the
-# local proxy -- then once via the proxy env before sleeping. Falls back to
+# measured 5-18x faster). DIRECT ONLY (policy): proxy is disabled on every
+# attempt via aria2c's empty --all/http/https-proxy options, which override any
+# proxy exported in the environment -- so a transfer connects directly or fails,
+# it is never routed via a proxy. Falls back to
 # fetch_retry when aria2c is absent. NOTE: once aria2c has touched a file,
 # only aria2c may finish it (sparse segments tracked in <file>.aria2), so
 # callers must use this for every attempt on a given file.
@@ -153,15 +159,18 @@ fetch_aria2() {
     # redirect signatures pin an exact byte range (HF Xet cas-bridge) 403 every
     # connection but the first -- set 1 there and scale workers instead.
     local conns="${ARIA2_CONNS:-8}"
+    # Empty --all/http/https-proxy disable proxy use regardless of the
+    # http_proxy/https_proxy/all_proxy environment (aria2 treats "" as "no proxy
+    # for this protocol"), so every attempt below is strictly direct.
     local args=(-c -x "$conns" -s "$conns" --file-allocation=none --console-log-level=warn
                 --summary-interval=60 --retry-wait=10 --max-tries=5 --timeout=60
+                --all-proxy="" --http-proxy="" --https-proxy=""
                 --lowest-speed-limit="${ARIA2_SPEED_FLOOR:-800K}"
                 -d "$(dirname "$out")" -o "$(basename "$out")")
     for hdr in ${FETCH_HEADERS[@]+"${FETCH_HEADERS[@]}"}; do args+=(--header="$hdr"); done
     for ((i = 1; i <= tries; i++)); do
-        aria2c "${args[@]}" --all-proxy="" "$url" && return 0
-        warn "aria2c direct attempt $i/$tries failed for $url -- retrying via proxy"
         aria2c "${args[@]}" "$url" && return 0
+        warn "aria2c direct attempt $i/$tries failed for $url -- retrying (direct only; proxy disabled by policy)"
         sleep 10
     done
     err "aria2c giving up after $tries attempts: $url"
